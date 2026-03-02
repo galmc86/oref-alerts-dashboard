@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Oref Alert Monitor</title>
+  <style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Segoe UI', Tahoma, Arial, sans-serif; background: #0d0d0d; color: #e0e0e0; min-height: 100vh; }
+header { display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; border-bottom: 1px solid #1a1a1a; }
+.header-left { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; color: #888; font-variant-numeric: tabular-nums; }
+.header-right { display: flex; align-items: center; gap: 16px; }
+.header-title { font-size: 1rem; font-weight: 600; color: #ccc; }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; background: #555; display: inline-block; }
+.status-dot.connected { background: #4CAF50; }
+.status-dot.error { background: #f44336; }
+[hidden] { display: none !important; }
+main { padding: 20px; }
+.section-label { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; font-size: 0.85rem; font-weight: 600; color: #ff6b6b; text-transform: uppercase; letter-spacing: 0.5px; }
+.section-label.safe-label { color: #666; margin-top: 28px; }
+.count-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 22px; border-radius: 11px; font-size: 0.75rem; font-weight: 700; padding: 0 6px; }
+.alert-badge { background: #c62828; color: #fff; }
+.safe-badge { background: #2a2a2a; color: #888; }
+.alert-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
+.alert-card { position: relative; background: linear-gradient(135deg, #8b1a1a 0%, #6b1010 100%); border: 1px solid #a02020; border-radius: 10px; padding: 14px 18px; animation: alertGlow 2s ease-in-out infinite; }
+@keyframes alertGlow { 0%, 100% { box-shadow: 0 0 12px rgba(198,40,40,0.3); } 50% { box-shadow: 0 0 24px rgba(198,40,40,0.6); } }
+.alert-timer { display: inline-block; background: rgba(0,0,0,0.4); color: #ff8a80; font-size: 0.7rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; margin-bottom: 8px; font-variant-numeric: tabular-nums; }
+.alert-city-en { font-size: 1.15rem; font-weight: 700; color: #fff; line-height: 1.2; }
+.alert-city-he { font-size: 0.85rem; color: rgba(255,255,255,0.7); direction: rtl; margin-top: 2px; }
+.alert-area { font-size: 0.7rem; color: rgba(255,255,255,0.45); margin-top: 4px; }
+.safe-pills { display: flex; flex-wrap: wrap; gap: 8px; }
+.safe-pill { display: flex; align-items: center; gap: 6px; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 20px; padding: 7px 14px; font-size: 0.8rem; color: #bbb; }
+.safe-pill .pill-dot { width: 6px; height: 6px; border-radius: 50%; background: #4CAF50; flex-shrink: 0; }
+@media (max-width: 480px) { header { flex-direction: column; gap: 8px; align-items: flex-start; } .alert-card { min-width: 140px; padding: 12px 14px; } .alert-city-en { font-size: 1rem; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-left">
+      <span id="last-update"></span>
+      <span id="connection-dot" class="status-dot"></span>
+    </div>
+    <div class="header-right">
+      <span class="header-title">Oref Alert Monitor</span>
+    </div>
+  </header>
+  <main>
+    <div id="card-view">
+      <div id="alert-section" hidden>
+        <div class="section-label">
+          <span class="count-badge alert-badge" id="alert-count">0</span>
+          <span>Active Alerts</span>
+        </div>
+        <div class="alert-row" id="alert-grid"></div>
+      </div>
+      <div id="safe-section">
+        <div class="section-label safe-label">
+          <span class="count-badge safe-badge" id="safe-count">0</span>
+          <span>Safe Regions</span>
+        </div>
+        <div class="safe-pills" id="safe-grid"></div>
+      </div>
+    </div>
+  </main>
+  <script>
+var CONFIG = {
+  PROXY_URL: 'https://proxyserver-bgdcbvbaebbfczer.israelcentral-01.azurewebsites.net/proxy',
+  ALERTS_TARGET: 'https://www.oref.org.il/WarningMessages/alert/alerts.json',
+  HISTORY_TARGET: 'https://www.oref.org.il/warningMessages/alert/History/AlertsHistory.json',
+  POLL_INTERVAL_MS: 3000,
+  HISTORY_LOOKBACK_MS: 30 * 60 * 1000,
+  REGIONS: [
+    { id: 1,  name: 'telaviv',          displayName: 'תל אביב-יפו',        displayNameEn: 'Tel Aviv',         orefAreaEn: 'Tel Aviv - Jaffa | Dan Area',            matchPatterns: ['תל אביב'] },
+    { id: 2,  name: 'beersheva',         displayName: 'באר שבע',             displayNameEn: 'Beer Sheva',       orefAreaEn: 'Beer Sheva | Central Negev',             matchPatterns: ['באר שבע'] },
+    { id: 3,  name: 'haifa',             displayName: 'חיפה',                displayNameEn: 'Haifa',            orefAreaEn: 'Haifa | Bay Area',                       matchPatterns: ['חיפה'] },
+    { id: 5,  name: 'jerusalem',         displayName: 'ירושלים',             displayNameEn: 'Jerusalem',        orefAreaEn: 'Jerusalem | Jerusalem Area',             matchPatterns: ['ירושלים'] },
+    { id: 6,  name: 'nathanya',          displayName: 'נתניה',               displayNameEn: 'Netanya',          orefAreaEn: 'Netanya | Sharon Area',                  matchPatterns: ['נתניה'] },
+    { id: 7,  name: 'rishonlezion',      displayName: 'ראשון לציון',         displayNameEn: 'Rishon LeZion',    orefAreaEn: 'Rishon LeZion | Shfela Area',            matchPatterns: ['ראשון לציון'] },
+    { id: 8,  name: 'bikatpetah',        displayName: 'פתח תקווה',           displayNameEn: 'Petah Tikva',      orefAreaEn: 'Petah Tikva | Dan Area',                 matchPatterns: ['פתח תקווה'] },
+    { id: 9,  name: 'hodhasharon',       displayName: 'הוד השרון',           displayNameEn: 'Hod HaSharon',     orefAreaEn: 'Hod HaSharon | Sharon Area',             matchPatterns: ['הוד השרון'] },
+    { id: 10, name: 'herzliyaramathas',  displayName: 'הרצליה',              displayNameEn: 'Herzliya',         orefAreaEn: 'Herzliya | Dan Area',                    matchPatterns: ['הרצליה'] },
+    { id: 11, name: 'rehovot',           displayName: 'רחובות',              displayNameEn: 'Rehovot',          orefAreaEn: 'Rehovot | Shfela Area',                  matchPatterns: ['רחובות'] },
+    { id: 12, name: 'krayot',            displayName: 'קריית ביאליק',        displayNameEn: 'Kiryat Bialik',    orefAreaEn: 'Kiryat Bialik | Bay Area',               matchPatterns: ['קריית ביאליק'] },
+    { id: 13, name: 'ashdod',            displayName: 'אשדוד',               displayNameEn: 'Ashdod',           orefAreaEn: 'Ashdod | Shfela Area',                   matchPatterns: ['אשדוד'] },
+    { id: 14, name: 'ramlelod',          displayName: 'רמלה',                displayNameEn: 'Ramla / Lod',      orefAreaEn: 'Ramla | Shfela Area',                    matchPatterns: ['רמלה'] },
+    { id: 15, name: 'hadera',            displayName: 'חדרה',                displayNameEn: 'Hadera',           orefAreaEn: 'Hadera | Menashe Area',                  matchPatterns: ['חדרה'] },
+    { id: 20, name: 'eilat',             displayName: 'אילת',                displayNameEn: 'Eilat',            orefAreaEn: 'Eilat | Eilat Area',                     matchPatterns: ['אילת'] },
+    { id: 21, name: 'modiin',            displayName: 'מודיעין מכבים רעות',  displayNameEn: "Modi'in",          orefAreaEn: "Modi'in | Jerusalem Area",               matchPatterns: ['מודיעין'] },
+    { id: 22, name: 'ashkelon',          displayName: 'אשקלון',              displayNameEn: 'Ashkelon',         orefAreaEn: 'Ashkelon | West Lachish Area',           matchPatterns: ['אשקלון'] },
+    { id: 26, name: 'shoham',            displayName: 'שוהם',                displayNameEn: 'Shoham',           orefAreaEn: 'Shoham | Yarkon Area',                   matchPatterns: ['שוהם'] },
+    { id: 27, name: 'yokneam',           displayName: 'יוקנעם המושבה',       displayNameEn: 'Yokneam',          orefAreaEn: 'Yokneam | Wadi Ara Area',                matchPatterns: ['יוקנעם', 'יקנעם'] },
+  ]
+};
+
+(function () {
+  'use strict';
+
+  var pollingTimer = null;
+  var timerInterval = null;
+  var consecutiveErrors = 0;
+  var MAX_BACKOFF_MS = 30000;
+  var alertStartTimes = {};
+  var regionStates = {};
+
+  function init() {
+    renderSafePills();
+    startPolling();
+    startTimerUpdates();
+  }
+
+  function renderSafePills() {
+    var safeGrid = document.getElementById('safe-grid');
+    safeGrid.innerHTML = '';
+    CONFIG.REGIONS.forEach(function (region) {
+      regionStates[region.name] = false;
+      safeGrid.appendChild(createSafePill(region));
+    });
+    updateCounts();
+  }
+
+  function createSafePill(region) {
+    var pill = document.createElement('div');
+    pill.className = 'safe-pill';
+    pill.id = 'pill-' + region.name;
+    pill.innerHTML = '<span class="pill-dot"></span><span>' + region.name + '</span>';
+    return pill;
+  }
+
+  function createAlertCard(region) {
+    var card = document.createElement('div');
+    card.className = 'alert-card';
+    card.id = 'alert-' + region.name;
+    card.innerHTML =
+      '<div class="alert-timer" id="timer-' + region.name + '">0s</div>' +
+      '<div class="alert-city-en">' + region.name + '</div>' +
+      '<div class="alert-city-he">' + region.displayName + '</div>' +
+      '<div class="alert-area">' + region.orefAreaEn + '</div>';
+    return card;
+  }
+
+  function startPolling() {
+    poll();
+    pollingTimer = setInterval(poll, CONFIG.POLL_INTERVAL_MS);
+  }
+
+  async function poll() {
+    try {
+      var primary = await fetchJSON(CONFIG.ALERTS_TARGET);
+      consecutiveErrors = 0;
+      setConnectionStatus(true);
+      if (primary && primary.data && primary.data.length > 0) {
+        processPrimaryResponse(primary);
+      } else {
+        var history = await fetchJSON(CONFIG.HISTORY_TARGET);
+        processHistoryFallback(history);
+      }
+      updateLastPollTime();
+    } catch (err) {
+      console.error('Poll error:', err);
+      consecutiveErrors++;
+      setConnectionStatus(false);
+      updateLastPollTime();
+      if (consecutiveErrors > 3) {
+        clearInterval(pollingTimer);
+        var backoff = Math.min(CONFIG.POLL_INTERVAL_MS * Math.pow(2, consecutiveErrors - 3), MAX_BACKOFF_MS);
+        setTimeout(function () { consecutiveErrors = 0; startPolling(); }, backoff);
+      }
+    }
+  }
+
+  async function fetchJSON(url) {
+    var response = await fetch(CONFIG.PROXY_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: url, method: 'GET', headers: {}, body: {} })
+    });
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    var text = await response.text();
+    if (!text || text.trim() === '' || text.trim() === '[]') return null;
+    return JSON.parse(text);
+  }
+
+  function processPrimaryResponse(response) {
+    var isAlertOver = response.title && response.title.includes('\u05D4\u05E1\u05EA\u05D9\u05D9\u05DD');
+    var alertedCities = response.data || [];
+    CONFIG.REGIONS.forEach(function (region) {
+      if (isRegionMatched(region, alertedCities) && !isAlertOver) { setRegionAlert(region); }
+      else { setRegionSafe(region); }
+    });
+    rebuildUI();
+  }
+
+  function processHistoryFallback(entries) {
+    if (!Array.isArray(entries) || entries.length === 0) { setAllSafe(); rebuildUI(); return; }
+    var cutoff = Date.now() - CONFIG.HISTORY_LOOKBACK_MS;
+    var recent = entries.filter(function (e) { return parseAlertDate(e.alertDate) > cutoff; });
+    if (recent.length === 0) { setAllSafe(); rebuildUI(); return; }
+    var cityStatus = {};
+    recent.forEach(function (e) {
+      var time = parseAlertDate(e.alertDate);
+      if (!cityStatus[e.data] || time > cityStatus[e.data].time) { cityStatus[e.data] = { time: time, category: e.category }; }
+    });
+    var activeCities = Object.keys(cityStatus).filter(function (c) { return cityStatus[c].category === 1; });
+    CONFIG.REGIONS.forEach(function (region) {
+      if (isRegionMatched(region, activeCities)) { setRegionAlert(region); }
+      else { setRegionSafe(region); }
+    });
+    rebuildUI();
+  }
+
+  function isRegionMatched(region, cities) {
+    return cities.some(function (city) {
+      return region.matchPatterns.some(function (p) { return city.includes(p); });
+    });
+  }
+
+  function setRegionAlert(region) {
+    if (!regionStates[region.name]) { alertStartTimes[region.name] = Date.now(); }
+    regionStates[region.name] = true;
+  }
+
+  function setRegionSafe(region) {
+    if (regionStates[region.name]) { delete alertStartTimes[region.name]; }
+    regionStates[region.name] = false;
+  }
+
+  function setAllSafe() { CONFIG.REGIONS.forEach(function (r) { setRegionSafe(r); }); }
+
+  function rebuildUI() {
+    var alertGrid = document.getElementById('alert-grid');
+    var safeGrid = document.getElementById('safe-grid');
+    var alertSection = document.getElementById('alert-section');
+    alertGrid.innerHTML = '';
+    safeGrid.innerHTML = '';
+    CONFIG.REGIONS.forEach(function (region) {
+      if (regionStates[region.name]) { alertGrid.appendChild(createAlertCard(region)); }
+      else { safeGrid.appendChild(createSafePill(region)); }
+    });
+    alertSection.hidden = alertGrid.children.length === 0;
+    updateCounts();
+    updateTimerDisplays();
+  }
+
+  function updateCounts() {
+    var a = 0, s = 0;
+    CONFIG.REGIONS.forEach(function (r) { if (regionStates[r.name]) a++; else s++; });
+    document.getElementById('alert-count').textContent = a;
+    document.getElementById('safe-count').textContent = s;
+  }
+
+  function startTimerUpdates() { timerInterval = setInterval(updateTimerDisplays, 1000); }
+
+  function updateTimerDisplays() {
+    var now = Date.now();
+    Object.keys(alertStartTimes).forEach(function (name) {
+      var el = document.getElementById('timer-' + name);
+      if (el) { el.textContent = formatElapsed(now - alertStartTimes[name]); }
+    });
+  }
+
+  function formatElapsed(ms) {
+    var s = Math.floor(ms / 1000);
+    if (s < 60) return s + 's';
+    var m = Math.floor(s / 60); s = s % 60;
+    if (m < 60) return m + 'm ' + s + 's';
+    var h = Math.floor(m / 60); m = m % 60;
+    return h + 'h ' + m + 'm';
+  }
+
+  function setConnectionStatus(connected) {
+    document.getElementById('connection-dot').className = connected ? 'status-dot connected' : 'status-dot error';
+  }
+
+  function updateLastPollTime() {
+    document.getElementById('last-update').textContent = new Date().toLocaleTimeString('en-US', { hour12: false, timeZone: 'Asia/Jerusalem' });
+  }
+
+  function parseAlertDate(dateStr) {
+    var p = dateStr.split(' '), d = p[0].split('-'), t = p[1].split(':');
+    return new Date(+d[0], +d[1] - 1, +d[2], +t[0], +t[1], +t[2]).getTime();
+  }
+
+  document.addEventListener('DOMContentLoaded', init);
+})();
+  </script>
+</body>
+</html>
