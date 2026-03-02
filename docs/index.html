@@ -198,9 +198,9 @@ var CONFIG = {
     var cityStatus = {};
     recent.forEach(function (e) {
       var time = parseAlertDate(e.alertDate);
-      if (!cityStatus[e.data] || time > cityStatus[e.data].time) { cityStatus[e.data] = { time: time, category: e.category }; }
+      if (!cityStatus[e.data] || time > cityStatus[e.data].time) { cityStatus[e.data] = { time: time, category: e.category, title: e.title }; }
     });
-    var activeCities = Object.keys(cityStatus).filter(function (c) { return cityStatus[c].category === 1; });
+    var activeCities = Object.keys(cityStatus).filter(function (c) { var entry = cityStatus[c]; return !(entry.title && entry.title.includes('\u05D4\u05E1\u05EA\u05D9\u05D9\u05DD')); });
     CONFIG.REGIONS.forEach(function (region) {
       if (isRegionMatched(region, activeCities)) { setRegionAlert(region); }
       else { setRegionSafe(region); }

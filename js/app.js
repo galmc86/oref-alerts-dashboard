@@ -161,13 +161,15 @@
       var city = e.data;
       var time = parseAlertDate(e.alertDate);
       if (!cityStatus[city] || time > cityStatus[city].time) {
-        cityStatus[city] = { time: time, category: e.category };
+        cityStatus[city] = { time: time, category: e.category, title: e.title };
       }
     });
 
     var activeCities = [];
     Object.keys(cityStatus).forEach(function (city) {
-      if (cityStatus[city].category === 1) {
+      var entry = cityStatus[city];
+      var isEnded = entry.title && entry.title.includes('\u05D4\u05E1\u05EA\u05D9\u05D9\u05DD');
+      if (!isEnded) {
         activeCities.push(city);
       }
     });
