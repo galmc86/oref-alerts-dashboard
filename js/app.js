@@ -66,12 +66,13 @@
 
       var isAlertOver = primary && primary.title && primary.title.includes('\u05D4\u05E1\u05EA\u05D9\u05D9\u05DD');
 
-      if (primary && primary.data && primary.data.length > 0 && !isAlertOver) {
-        processPrimaryResponse(primary);
+      if (primary && primary.data && primary.data.length > 0) {
+        if (isAlertOver) {
+          processEndedResponse(primary);
+        } else {
+          processPrimaryResponse(primary);
+        }
       } else {
-        // Fall through to history when primary is empty OR is an "ended" event.
-        // "Ended" events only describe one alert type, so we can't use them
-        // to determine overall state — history tracks all types properly.
         var history = await fetchHistory();
         processHistoryFallback(history);
       }
@@ -116,6 +117,19 @@
     var text = await response.text();
     if (!text || text.trim() === '') return [];
     return JSON.parse(text);
+  }
+
+  // --- Process Ended Response ---
+
+  function processEndedResponse(response) {
+    // "Ended" event: only set matched regions safe, leave others untouched
+    var endedCities = response.data || [];
+    CONFIG.REGIONS.forEach(function (region) {
+      if (isRegionMatched(region, endedCities)) {
+        setRegionSafe(region);
+      }
+    });
+    rebuildUI();
   }
 
   // --- Process Primary Response ---
