@@ -9,6 +9,8 @@
   var regionAlertTimes = {};
   // Current state per region: true = alert, false = safe
   var regionStates = {};
+  // Track regions ended by primary "ended" events so history fallback won't re-alert them
+  var recentlyEndedRegions = {};
 
   // --- Initialization ---
 
@@ -122,11 +124,14 @@
   // --- Process Ended Response ---
 
   function processEndedResponse(response) {
-    // "Ended" event: only set matched regions safe, leave others untouched
+    // "Ended" event: only set matched regions safe, leave others untouched.
+    // Record them so history fallback won't re-alert them.
     var endedCities = response.data || [];
+    var now = Date.now();
     CONFIG.REGIONS.forEach(function (region) {
       if (isRegionMatched(region, endedCities)) {
         setRegionSafe(region);
+        recentlyEndedRegions[region.name] = now;
       }
     });
     rebuildUI();
@@ -141,6 +146,7 @@
     CONFIG.REGIONS.forEach(function (region) {
       var isMatched = isRegionMatched(region, alertedCities);
       if (isMatched) {
+        delete recentlyEndedRegions[region.name];
         setRegionAlert(region, alertTime);
       }
     });
@@ -196,8 +202,16 @@
 
     var activeCities = Object.keys(activeCityDates);
 
+    // Clean up ended records older than the lookback window
+    var now = Date.now();
+    Object.keys(recentlyEndedRegions).forEach(function (name) {
+      if (now - recentlyEndedRegions[name] > CONFIG.HISTORY_LOOKBACK_MS) {
+        delete recentlyEndedRegions[name];
+      }
+    });
+
     CONFIG.REGIONS.forEach(function (region) {
-      if (isRegionMatched(region, activeCities)) {
+      if (isRegionMatched(region, activeCities) && !recentlyEndedRegions[region.name]) {
         var alertTime = findRegionAlertTime(region, activeCityDates);
         setRegionAlert(region, alertTime);
       } else {
