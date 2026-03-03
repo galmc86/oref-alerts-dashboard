@@ -399,13 +399,11 @@
     if (newRegions.length === 0) return;
 
     var names = newRegions.map(function (r) { return r.displayNameEn || r.name; }).join(', ');
-    var notification = new Notification('New Alert', {
+    new Notification('Israel Alert Monitor', {
       body: names,
-      tag: 'israel-alert',
-      renotify: true
+      tag: 'israel-alert-' + Date.now(),
+      requireInteraction: true
     });
-
-    setTimeout(function () { notification.close(); }, 10000);
   }
 
   // --- Start ---
