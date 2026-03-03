@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Oref Alert Monitor</title>
+  <title>Israel Alert Monitor</title>
   <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: 'Segoe UI', Tahoma, Arial, sans-serif; background: #0d0d0d; color: #e0e0e0; min-height: 100vh; }
@@ -26,8 +26,6 @@ main { padding: 20px; }
 @keyframes alertGlow { 0%, 100% { box-shadow: 0 0 12px rgba(198,40,40,0.3); } 50% { box-shadow: 0 0 24px rgba(198,40,40,0.6); } }
 .alert-timer { display: inline-block; background: rgba(0,0,0,0.4); color: #ff8a80; font-size: 0.7rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; margin-bottom: 8px; font-variant-numeric: tabular-nums; }
 .alert-city-en { font-size: 1.15rem; font-weight: 700; color: #fff; line-height: 1.2; }
-.alert-city-he { font-size: 0.85rem; color: rgba(255,255,255,0.7); direction: rtl; margin-top: 2px; }
-.alert-area { font-size: 0.7rem; color: rgba(255,255,255,0.45); margin-top: 4px; }
 .safe-pills { display: flex; flex-wrap: wrap; gap: 8px; }
 .safe-pill { display: flex; align-items: center; gap: 6px; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 20px; padding: 7px 14px; font-size: 0.8rem; color: #bbb; }
 .safe-pill .pill-dot { width: 6px; height: 6px; border-radius: 50%; background: #4CAF50; flex-shrink: 0; }
@@ -41,7 +39,7 @@ main { padding: 20px; }
       <span id="connection-dot" class="status-dot"></span>
     </div>
     <div class="header-right">
-      <span class="header-title">Oref Alert Monitor</span>
+      <span class="header-title">Israel Alert Monitor</span>
     </div>
   </header>
   <main>
@@ -96,16 +94,14 @@ var CONFIG = {
   'use strict';
 
   var pollingTimer = null;
-  var timerInterval = null;
   var consecutiveErrors = 0;
   var MAX_BACKOFF_MS = 30000;
-  var alertStartTimes = {};
+  var regionAlertTimes = {};
   var regionStates = {};
 
   function init() {
     renderSafePills();
     startPolling();
-    startTimerUpdates();
   }
 
   function renderSafePills() {
@@ -130,11 +126,10 @@ var CONFIG = {
     var card = document.createElement('div');
     card.className = 'alert-card';
     card.id = 'alert-' + region.name;
+    var timeStr = regionAlertTimes[region.name] || '';
     card.innerHTML =
-      '<div class="alert-timer" id="timer-' + region.name + '">0s</div>' +
-      '<div class="alert-city-en">' + region.name + '</div>' +
-      '<div class="alert-city-he">' + region.displayName + '</div>' +
-      '<div class="alert-area">' + region.orefAreaEn + '</div>';
+      '<div class="alert-timer">Started ' + timeStr + '</div>' +
+      '<div class="alert-city-en">' + region.name + '</div>';
     return card;
   }
 
@@ -148,7 +143,10 @@ var CONFIG = {
       var primary = await fetchJSON(CONFIG.ALERTS_TARGET);
       consecutiveErrors = 0;
       setConnectionStatus(true);
-      if (primary && primary.data && primary.data.length > 0) {
+
+      var isAlertOver = primary && primary.title && primary.title.includes('\u05D4\u05E1\u05EA\u05D9\u05D9\u05DD');
+
+      if (primary && primary.data && primary.data.length > 0 && !isAlertOver) {
         processPrimaryResponse(primary);
       } else {
         var history = await fetchJSON(CONFIG.HISTORY_TARGET);
@@ -181,11 +179,12 @@ var CONFIG = {
   }
 
   function processPrimaryResponse(response) {
-    var isAlertOver = response.title && response.title.includes('\u05D4\u05E1\u05EA\u05D9\u05D9\u05DD');
     var alertedCities = response.data || [];
+    var alertTime = getIsraelTime();
     CONFIG.REGIONS.forEach(function (region) {
-      if (isRegionMatched(region, alertedCities) && !isAlertOver) { setRegionAlert(region); }
-      else { setRegionSafe(region); }
+      if (isRegionMatched(region, alertedCities)) {
+        setRegionAlert(region, alertTime);
+      }
     });
     rebuildUI();
   }
@@ -195,15 +194,39 @@ var CONFIG = {
     var cutoff = Date.now() - CONFIG.HISTORY_LOOKBACK_MS;
     var recent = entries.filter(function (e) { return parseAlertDate(e.alertDate) > cutoff; });
     if (recent.length === 0) { setAllSafe(); rebuildUI(); return; }
-    var cityStatus = {};
+
+    // Group by city + category so different alert types are tracked independently.
+    var cityCategory = {};
     recent.forEach(function (e) {
+      var city = e.data;
       var time = parseAlertDate(e.alertDate);
-      if (!cityStatus[e.data] || time > cityStatus[e.data].time) { cityStatus[e.data] = { time: time, category: e.category, title: e.title }; }
+      var key = city + '|' + (e.category || '');
+      if (!cityCategory[key] || time > cityCategory[key].time) {
+        cityCategory[key] = { city: city, time: time, category: e.category, title: e.title, alertDate: e.alertDate };
+      }
     });
-    var activeCities = Object.keys(cityStatus).filter(function (c) { var entry = cityStatus[c]; return !(entry.title && entry.title.includes('\u05D4\u05E1\u05EA\u05D9\u05D9\u05DD')); });
+
+    // Build map of active cities with their most recent alertDate
+    var activeCityDates = {};
+    Object.keys(cityCategory).forEach(function (key) {
+      var entry = cityCategory[key];
+      var isEnded = entry.title && entry.title.includes('\u05D4\u05E1\u05EA\u05D9\u05D9\u05DD');
+      if (!isEnded) {
+        if (!activeCityDates[entry.city] || entry.time > activeCityDates[entry.city].time) {
+          activeCityDates[entry.city] = { time: entry.time, alertDate: entry.alertDate };
+        }
+      }
+    });
+
+    var activeCities = Object.keys(activeCityDates);
+
     CONFIG.REGIONS.forEach(function (region) {
-      if (isRegionMatched(region, activeCities)) { setRegionAlert(region); }
-      else { setRegionSafe(region); }
+      if (isRegionMatched(region, activeCities)) {
+        var alertTime = findRegionAlertTime(region, activeCityDates);
+        setRegionAlert(region, alertTime);
+      } else {
+        setRegionSafe(region);
+      }
     });
     rebuildUI();
   }
@@ -214,13 +237,28 @@ var CONFIG = {
     });
   }
 
-  function setRegionAlert(region) {
-    if (!regionStates[region.name]) { alertStartTimes[region.name] = Date.now(); }
+  function findRegionAlertTime(region, activeCityDates) {
+    var cities = Object.keys(activeCityDates);
+    for (var i = 0; i < cities.length; i++) {
+      var city = cities[i];
+      var matches = region.matchPatterns.some(function (p) { return city.includes(p); });
+      if (matches) {
+        var parts = activeCityDates[city].alertDate.split(' ');
+        return parts[1] || '';
+      }
+    }
+    return getIsraelTime();
+  }
+
+  function setRegionAlert(region, alertTime) {
+    if (!regionStates[region.name]) {
+      regionAlertTimes[region.name] = alertTime || getIsraelTime();
+    }
     regionStates[region.name] = true;
   }
 
   function setRegionSafe(region) {
-    if (regionStates[region.name]) { delete alertStartTimes[region.name]; }
+    if (regionStates[region.name]) { delete regionAlertTimes[region.name]; }
     regionStates[region.name] = false;
   }
 
@@ -238,7 +276,6 @@ var CONFIG = {
     });
     alertSection.hidden = alertGrid.children.length === 0;
     updateCounts();
-    updateTimerDisplays();
   }
 
   function updateCounts() {
@@ -248,31 +285,16 @@ var CONFIG = {
     document.getElementById('safe-count').textContent = s;
   }
 
-  function startTimerUpdates() { timerInterval = setInterval(updateTimerDisplays, 1000); }
-
-  function updateTimerDisplays() {
-    var now = Date.now();
-    Object.keys(alertStartTimes).forEach(function (name) {
-      var el = document.getElementById('timer-' + name);
-      if (el) { el.textContent = formatElapsed(now - alertStartTimes[name]); }
-    });
-  }
-
-  function formatElapsed(ms) {
-    var s = Math.floor(ms / 1000);
-    if (s < 60) return s + 's';
-    var m = Math.floor(s / 60); s = s % 60;
-    if (m < 60) return m + 'm ' + s + 's';
-    var h = Math.floor(m / 60); m = m % 60;
-    return h + 'h ' + m + 'm';
-  }
-
   function setConnectionStatus(connected) {
     document.getElementById('connection-dot').className = connected ? 'status-dot connected' : 'status-dot error';
   }
 
+  function getIsraelTime() {
+    return new Date().toLocaleTimeString('en-US', { hour12: false, timeZone: 'Asia/Jerusalem' });
+  }
+
   function updateLastPollTime() {
-    document.getElementById('last-update').textContent = new Date().toLocaleTimeString('en-US', { hour12: false, timeZone: 'Asia/Jerusalem' });
+    document.getElementById('last-update').textContent = getIsraelTime();
   }
 
   function parseAlertDate(dateStr) {
