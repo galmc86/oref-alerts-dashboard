@@ -2,12 +2,11 @@
   'use strict';
 
   var pollingTimer = null;
-  var timerInterval = null;
   var consecutiveErrors = 0;
   var MAX_BACKOFF_MS = 30000;
 
-  // Track when each region entered alert state
-  var alertStartTimes = {};
+  // Track the alert time (from alertDate) for each region
+  var regionAlertTimes = {};
   // Current state per region: true = alert, false = safe
   var regionStates = {};
 
@@ -16,7 +15,6 @@
   function init() {
     renderSafePills();
     startPolling();
-    startTimerUpdates();
   }
 
   // --- Render safe pills (initial state) ---
@@ -46,11 +44,10 @@
     var card = document.createElement('div');
     card.className = 'alert-card';
     card.id = 'alert-' + region.name;
+    var timeStr = regionAlertTimes[region.name] || '';
     card.innerHTML =
-      '<div class="alert-timer" id="timer-' + region.name + '">0s</div>' +
-      '<div class="alert-city-en">' + region.name + '</div>' +
-      '<div class="alert-city-he">' + region.displayName + '</div>' +
-      '<div class="alert-area">' + region.orefAreaEn + '</div>';
+      '<div class="alert-timer">Started ' + timeStr + '</div>' +
+      '<div class="alert-city-en">' + region.name + '</div>';
     return card;
   }
 
@@ -125,11 +122,12 @@
 
   function processPrimaryResponse(response) {
     var alertedCities = response.data || [];
+    var alertTime = getIsraelTime();
 
     CONFIG.REGIONS.forEach(function (region) {
       var isMatched = isRegionMatched(region, alertedCities);
       if (isMatched) {
-        setRegionAlert(region);
+        setRegionAlert(region, alertTime);
       }
     });
 
@@ -166,22 +164,28 @@
       var time = parseAlertDate(e.alertDate);
       var key = city + '|' + (e.category || '');
       if (!cityCategory[key] || time > cityCategory[key].time) {
-        cityCategory[key] = { city: city, time: time, category: e.category, title: e.title };
+        cityCategory[key] = { city: city, time: time, category: e.category, title: e.title, alertDate: e.alertDate };
       }
     });
 
-    var activeCities = [];
+    // Build map of active cities with their most recent alertDate
+    var activeCityDates = {};
     Object.keys(cityCategory).forEach(function (key) {
       var entry = cityCategory[key];
       var isEnded = entry.title && entry.title.includes('\u05D4\u05E1\u05EA\u05D9\u05D9\u05DD');
-      if (!isEnded && activeCities.indexOf(entry.city) === -1) {
-        activeCities.push(entry.city);
+      if (!isEnded) {
+        if (!activeCityDates[entry.city] || entry.time > activeCityDates[entry.city].time) {
+          activeCityDates[entry.city] = { time: entry.time, alertDate: entry.alertDate };
+        }
       }
     });
 
+    var activeCities = Object.keys(activeCityDates);
+
     CONFIG.REGIONS.forEach(function (region) {
       if (isRegionMatched(region, activeCities)) {
-        setRegionAlert(region);
+        var alertTime = findRegionAlertTime(region, activeCityDates);
+        setRegionAlert(region, alertTime);
       } else {
         setRegionSafe(region);
       }
@@ -200,20 +204,34 @@
     });
   }
 
+  function findRegionAlertTime(region, activeCityDates) {
+    var cities = Object.keys(activeCityDates);
+    for (var i = 0; i < cities.length; i++) {
+      var city = cities[i];
+      var matches = region.matchPatterns.some(function (pattern) {
+        return city.includes(pattern);
+      });
+      if (matches) {
+        // Extract time portion from alertDate "YYYY-MM-DD HH:MM:SS"
+        var parts = activeCityDates[city].alertDate.split(' ');
+        return parts[1] || '';
+      }
+    }
+    return getIsraelTime();
+  }
+
   // --- State Management ---
 
-  function setRegionAlert(region) {
+  function setRegionAlert(region, alertTime) {
     if (!regionStates[region.name]) {
-      // Newly alerted — record start time
-      alertStartTimes[region.name] = Date.now();
+      regionAlertTimes[region.name] = alertTime || getIsraelTime();
     }
     regionStates[region.name] = true;
   }
 
   function setRegionSafe(region) {
     if (regionStates[region.name]) {
-      // Was alerted, now safe — clear timer
-      delete alertStartTimes[region.name];
+      delete regionAlertTimes[region.name];
     }
     regionStates[region.name] = false;
   }
@@ -244,7 +262,6 @@
 
     alertSection.hidden = alertGrid.children.length === 0;
     updateCounts();
-    updateTimerDisplays();
   }
 
   function updateCounts() {
@@ -259,34 +276,6 @@
     });
     document.getElementById('alert-count').textContent = alertCount;
     document.getElementById('safe-count').textContent = safeCount;
-  }
-
-  // --- Timer ---
-
-  function startTimerUpdates() {
-    timerInterval = setInterval(updateTimerDisplays, 1000);
-  }
-
-  function updateTimerDisplays() {
-    var now = Date.now();
-    Object.keys(alertStartTimes).forEach(function (name) {
-      var el = document.getElementById('timer-' + name);
-      if (el) {
-        var elapsed = now - alertStartTimes[name];
-        el.textContent = formatElapsed(elapsed);
-      }
-    });
-  }
-
-  function formatElapsed(ms) {
-    var totalSec = Math.floor(ms / 1000);
-    if (totalSec < 60) return totalSec + 's';
-    var min = Math.floor(totalSec / 60);
-    var sec = totalSec % 60;
-    if (min < 60) return min + 'm ' + sec + 's';
-    var hr = Math.floor(min / 60);
-    min = min % 60;
-    return hr + 'h ' + min + 'm';
   }
 
   // --- Connection & Time ---

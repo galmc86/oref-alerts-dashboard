@@ -181,19 +181,6 @@ main {
   line-height: 1.2;
 }
 
-.alert-city-he {
-  font-size: 0.85rem;
-  color: rgba(255, 255, 255, 0.7);
-  direction: rtl;
-  margin-top: 2px;
-}
-
-.alert-area {
-  font-size: 0.7rem;
-  color: rgba(255, 255, 255, 0.45);
-  margin-top: 4px;
-}
-
 /* Safe Pills */
 .safe-pills {
   display: flex;
