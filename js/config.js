@@ -1,7 +1,7 @@
 const CONFIG = {
   PROXY_URL: '/api/alerts',
   HISTORY_URL: '/api/history',
-  POLL_INTERVAL_MS: 3000,
+  POLL_INTERVAL_MS: 15000,
   HISTORY_LOOKBACK_MS: 30 * 60 * 1000, // 30 minutes
 
   REGIONS: [
