@@ -67,9 +67,14 @@
       consecutiveErrors = 0;
       setConnectionStatus(true);
 
-      if (primary && primary.data && primary.data.length > 0) {
+      var isAlertOver = primary && primary.title && primary.title.includes('\u05D4\u05E1\u05EA\u05D9\u05D9\u05DD');
+
+      if (primary && primary.data && primary.data.length > 0 && !isAlertOver) {
         processPrimaryResponse(primary);
       } else {
+        // Fall through to history when primary is empty OR is an "ended" event.
+        // "Ended" events only describe one alert type, so we can't use them
+        // to determine overall state — history tracks all types properly.
         var history = await fetchHistory();
         processHistoryFallback(history);
       }
@@ -119,15 +124,12 @@
   // --- Process Primary Response ---
 
   function processPrimaryResponse(response) {
-    var isAlertOver = response.title && response.title.includes('\u05D4\u05E1\u05EA\u05D9\u05D9\u05DD');
     var alertedCities = response.data || [];
 
     CONFIG.REGIONS.forEach(function (region) {
       var isMatched = isRegionMatched(region, alertedCities);
-      if (isMatched && !isAlertOver) {
+      if (isMatched) {
         setRegionAlert(region);
-      } else {
-        setRegionSafe(region);
       }
     });
 
@@ -156,21 +158,24 @@
       return;
     }
 
-    var cityStatus = {};
+    // Group by city + category so different alert types are tracked independently.
+    // A city is active if ANY of its alert categories still has a non-ended entry.
+    var cityCategory = {};
     recent.forEach(function (e) {
       var city = e.data;
       var time = parseAlertDate(e.alertDate);
-      if (!cityStatus[city] || time > cityStatus[city].time) {
-        cityStatus[city] = { time: time, category: e.category, title: e.title };
+      var key = city + '|' + (e.category || '');
+      if (!cityCategory[key] || time > cityCategory[key].time) {
+        cityCategory[key] = { city: city, time: time, category: e.category, title: e.title };
       }
     });
 
     var activeCities = [];
-    Object.keys(cityStatus).forEach(function (city) {
-      var entry = cityStatus[city];
+    Object.keys(cityCategory).forEach(function (key) {
+      var entry = cityCategory[key];
       var isEnded = entry.title && entry.title.includes('\u05D4\u05E1\u05EA\u05D9\u05D9\u05DD');
-      if (!isEnded) {
-        activeCities.push(city);
+      if (!isEnded && activeCities.indexOf(entry.city) === -1) {
+        activeCities.push(entry.city);
       }
     });
 
