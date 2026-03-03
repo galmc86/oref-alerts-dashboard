@@ -18,7 +18,11 @@
   </header>
 
   <main>
-    <div id="card-view">
+    <div id="loading-overlay" class="loading-overlay">
+      <div class="loading-spinner"></div>
+      <div class="loading-text">Fetching alerts...</div>
+    </div>
+    <div id="card-view" hidden>
       <div id="alert-section" hidden>
         <div class="section-label">
           <span class="count-badge alert-badge" id="alert-count">0</span>

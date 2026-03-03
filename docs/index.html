@@ -30,6 +30,11 @@ main { padding: 20px; }
 .safe-pill { display: flex; align-items: center; gap: 6px; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 20px; padding: 7px 14px; font-size: 0.8rem; color: #bbb; }
 .safe-pill .pill-dot { width: 6px; height: 6px; border-radius: 50%; background: #4CAF50; flex-shrink: 0; }
 @media (max-width: 480px) { header { flex-direction: column; gap: 8px; align-items: flex-start; } .alert-card { min-width: 140px; padding: 12px 14px; } .alert-city-en { font-size: 1rem; } }
+.loading-overlay { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 80px 20px; gap: 20px; }
+.loading-overlay.hidden { display: none; }
+.loading-spinner { width: 40px; height: 40px; border: 3px solid #2a2a2a; border-top-color: #4CAF50; border-radius: 50%; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.loading-text { font-size: 0.85rem; color: #888; }
   </style>
 </head>
 <body>
@@ -43,7 +48,11 @@ main { padding: 20px; }
     </div>
   </header>
   <main>
-    <div id="card-view">
+    <div id="loading-overlay" class="loading-overlay">
+      <div class="loading-spinner"></div>
+      <div class="loading-text">Fetching alerts...</div>
+    </div>
+    <div id="card-view" hidden>
       <div id="alert-section" hidden>
         <div class="section-label">
           <span class="count-badge alert-badge" id="alert-count">0</span>
@@ -98,6 +107,7 @@ var CONFIG = {
   var MAX_BACKOFF_MS = 30000;
   var regionAlertTimes = {};
   var regionStates = {};
+  var isFirstLoad = true;
   // Track regions ended by primary "ended" events so history fallback won't re-alert them
   var recentlyEndedRegions = {};
 
@@ -159,6 +169,7 @@ var CONFIG = {
         processHistoryFallback(history);
       }
       updateLastPollTime();
+      if (isFirstLoad) { hideLoading(); isFirstLoad = false; }
     } catch (err) {
       console.error('Poll error:', err);
       consecutiveErrors++;
@@ -317,6 +328,11 @@ var CONFIG = {
     CONFIG.REGIONS.forEach(function (r) { if (regionStates[r.name]) a++; else s++; });
     document.getElementById('alert-count').textContent = a;
     document.getElementById('safe-count').textContent = s;
+  }
+
+  function hideLoading() {
+    document.getElementById('loading-overlay').classList.add('hidden');
+    document.getElementById('card-view').removeAttribute('hidden');
   }
 
   function setConnectionStatus(connected) {

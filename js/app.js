@@ -9,6 +9,7 @@
   var regionAlertTimes = {};
   // Current state per region: true = alert, false = safe
   var regionStates = {};
+  var isFirstLoad = true;
   // Track regions ended by primary "ended" events so history fallback won't re-alert them
   var recentlyEndedRegions = {};
 
@@ -79,6 +80,10 @@
         processHistoryFallback(history);
       }
       updateLastPollTime();
+      if (isFirstLoad) {
+        hideLoading();
+        isFirstLoad = false;
+      }
     } catch (err) {
       console.error('Poll error:', err);
       consecutiveErrors++;
@@ -317,6 +322,11 @@
   }
 
   // --- Connection & Time ---
+
+  function hideLoading() {
+    document.getElementById('loading-overlay').classList.add('hidden');
+    document.getElementById('card-view').removeAttribute('hidden');
+  }
 
   function setConnectionStatus(connected) {
     var dot = document.getElementById('connection-dot');
