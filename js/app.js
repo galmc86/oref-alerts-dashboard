@@ -9,11 +9,16 @@
   var regionAlertTimes = {};
   // Current state per region: true = alert, false = safe
   var regionStates = {};
+  // Whether user has opted in to notifications
+  var notificationsEnabled = false;
+  // Skip notifications on first poll (initial load)
+  var isFirstPoll = true;
 
   // --- Initialization ---
 
   function init() {
     renderSafePills();
+    initNotifications();
     startPolling();
   }
 
@@ -137,15 +142,19 @@
   function processPrimaryResponse(response) {
     var alertedCities = response.data || [];
     var alertTime = getIsraelTime();
+    var newAlerts = [];
 
     CONFIG.REGIONS.forEach(function (region) {
       var isMatched = isRegionMatched(region, alertedCities);
       if (isMatched) {
+        if (!regionStates[region.name]) newAlerts.push(region);
         setRegionAlert(region, alertTime);
       }
     });
 
     rebuildUI();
+    if (!isFirstPoll && newAlerts.length > 0) sendNotification(newAlerts);
+    isFirstPoll = false;
   }
 
   // --- Process History Fallback ---
@@ -154,6 +163,7 @@
     if (!Array.isArray(entries) || entries.length === 0) {
       setAllSafe();
       rebuildUI();
+      isFirstPoll = false;
       return;
     }
 
@@ -167,6 +177,7 @@
     if (recent.length === 0) {
       setAllSafe();
       rebuildUI();
+      isFirstPoll = false;
       return;
     }
 
@@ -196,8 +207,11 @@
 
     var activeCities = Object.keys(activeCityDates);
 
+    var newAlerts = [];
+
     CONFIG.REGIONS.forEach(function (region) {
       if (isRegionMatched(region, activeCities)) {
+        if (!regionStates[region.name]) newAlerts.push(region);
         var alertTime = findRegionAlertTime(region, activeCityDates);
         setRegionAlert(region, alertTime);
       } else {
@@ -206,6 +220,8 @@
     });
 
     rebuildUI();
+    if (!isFirstPoll && newAlerts.length > 0) sendNotification(newAlerts);
+    isFirstPoll = false;
   }
 
   // --- Matching ---
@@ -326,6 +342,70 @@
       parseInt(timeParts[1]),
       parseInt(timeParts[2])
     ).getTime();
+  }
+
+  // --- Notifications ---
+
+  function initNotifications() {
+    var btn = document.getElementById('notify-btn');
+    if (!('Notification' in window)) {
+      btn.style.display = 'none';
+      return;
+    }
+
+    // Restore state from previous permission + localStorage preference
+    if (Notification.permission === 'granted' && localStorage.getItem('notifyEnabled') === 'true') {
+      notificationsEnabled = true;
+    }
+    updateNotifyButton();
+
+    btn.addEventListener('click', function () {
+      if (Notification.permission === 'denied') return;
+
+      if (Notification.permission === 'granted') {
+        // Toggle on/off
+        notificationsEnabled = !notificationsEnabled;
+        localStorage.setItem('notifyEnabled', notificationsEnabled ? 'true' : 'false');
+        updateNotifyButton();
+      } else {
+        // Request permission
+        Notification.requestPermission().then(function (result) {
+          if (result === 'granted') {
+            notificationsEnabled = true;
+            localStorage.setItem('notifyEnabled', 'true');
+          }
+          updateNotifyButton();
+        });
+      }
+    });
+  }
+
+  function updateNotifyButton() {
+    var btn = document.getElementById('notify-btn');
+    btn.className = 'notify-btn';
+    if (Notification.permission === 'denied') {
+      btn.classList.add('denied');
+      btn.title = 'Notifications blocked by browser';
+    } else if (notificationsEnabled) {
+      btn.classList.add('enabled');
+      btn.title = 'Notifications enabled (click to disable)';
+    } else {
+      btn.title = 'Enable notifications';
+    }
+  }
+
+  function sendNotification(newRegions) {
+    if (!notificationsEnabled || Notification.permission !== 'granted') return;
+    if (newRegions.length === 0) return;
+
+    var names = newRegions.map(function (r) { return r.displayNameEn || r.name; }).join(', ');
+    var notification = new Notification('New Alert', {
+      body: names,
+      tag: 'israel-alert',
+      renotify: true
+    });
+
+    setTimeout(function () { notification.close(); }, 10000);
   }
 
   // --- Start ---
