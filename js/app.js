@@ -176,27 +176,37 @@
       return;
     }
 
-    // Group by city + category so different alert types are tracked independently.
-    // A city is active if ANY of its alert categories still has a non-ended entry.
-    var cityCategory = {};
+    // Per city, track the most recent ended timestamp and most recent active entry.
+    // An "ended" event (category 13) cancels ALL earlier active alerts for the same
+    // city regardless of category, since the original alert (cat 1) and ended event
+    // (cat 13) use different category numbers.
+    var cityEndedTime = {};
+    var cityActiveEntries = {};
+
     recent.forEach(function (e) {
       var city = e.data;
       var time = parseAlertDate(e.alertDate);
-      var key = city + '|' + (e.category || '');
-      if (!cityCategory[key] || time > cityCategory[key].time) {
-        cityCategory[key] = { city: city, time: time, category: e.category, title: e.title, alertDate: e.alertDate };
+      var isEnded = e.title && e.title.includes('\u05D4\u05E1\u05EA\u05D9\u05D9\u05DD');
+
+      if (isEnded) {
+        if (!cityEndedTime[city] || time > cityEndedTime[city]) {
+          cityEndedTime[city] = time;
+        }
+      } else {
+        if (!cityActiveEntries[city] || time > cityActiveEntries[city].time) {
+          cityActiveEntries[city] = { time: time, alertDate: e.alertDate };
+        }
       }
     });
 
-    // Build map of active cities with their most recent alertDate
+    // A city is active only if its most recent non-ended entry is newer than
+    // its most recent ended entry (or it has no ended entry at all)
     var activeCityDates = {};
-    Object.keys(cityCategory).forEach(function (key) {
-      var entry = cityCategory[key];
-      var isEnded = entry.title && entry.title.includes('\u05D4\u05E1\u05EA\u05D9\u05D9\u05DD');
-      if (!isEnded) {
-        if (!activeCityDates[entry.city] || entry.time > activeCityDates[entry.city].time) {
-          activeCityDates[entry.city] = { time: entry.time, alertDate: entry.alertDate };
-        }
+    Object.keys(cityActiveEntries).forEach(function (city) {
+      var activeEntry = cityActiveEntries[city];
+      var endedTime = cityEndedTime[city];
+      if (!endedTime || activeEntry.time > endedTime) {
+        activeCityDates[city] = activeEntry;
       }
     });
 
