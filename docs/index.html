@@ -196,7 +196,12 @@ var CONFIG = {
         processHistoryFallback(history);
       }
       updateLastPollTime();
-      if (isFirstLoad) { hideLoading(); isFirstLoad = false; }
+      if (isFirstLoad) {
+        hideLoading(); isFirstLoad = false;
+        CONFIG.REGIONS.forEach(function (region) {
+          if (regionStates[region.name]) { emitEvent(createEvent('alert_start', region)); }
+        });
+      }
     } catch (err) {
       console.error('Poll error:', err);
       consecutiveErrors++;

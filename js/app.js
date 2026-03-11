@@ -95,6 +95,12 @@
       if (isFirstLoad) {
         hideLoading();
         isFirstLoad = false;
+        // Emit events for any regions already in alert on first load
+        CONFIG.REGIONS.forEach(function (region) {
+          if (regionStates[region.name]) {
+            emitEvent(createEvent('alert_start', region));
+          }
+        });
       }
     } catch (err) {
       console.error('Poll error:', err);
