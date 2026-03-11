@@ -52,6 +52,17 @@ main { padding: 20px; }
 .event-label { font-weight: 700; font-size: 0.7rem; text-transform: uppercase; min-width: 40px; color: #888; }
 .event-region { flex: 1; color: #ccc; }
 .event-time { color: #666; font-variant-numeric: tabular-nums; font-size: 0.75rem; }
+.webhook-section { margin-top: 4px; }
+.webhook-settings { padding: 12px; background: #1a1a1a; border-radius: 0 0 8px 8px; }
+.webhook-input-row { display: flex; gap: 8px; align-items: center; }
+.webhook-input { flex: 1; background: #0d0d0d; border: 1px solid #333; color: #ccc; padding: 8px 10px; border-radius: 6px; font-size: 0.8rem; font-family: monospace; }
+.webhook-input:focus { outline: none; border-color: #555; }
+.webhook-save-btn, .webhook-test-btn { padding: 8px 14px; border: none; border-radius: 6px; font-size: 0.8rem; cursor: pointer; font-weight: 600; }
+.webhook-save-btn { background: #2196F3; color: #fff; }
+.webhook-save-btn:hover { background: #1976D2; }
+.webhook-test-btn { background: #333; color: #ccc; }
+.webhook-test-btn:hover { background: #444; }
+.webhook-status { margin-top: 8px; font-size: 0.75rem; color: #888; min-height: 1em; }
   </style>
 </head>
 <body>
@@ -88,6 +99,17 @@ main { padding: 20px; }
       <div id="event-log-section">
         <button id="event-log-toggle" class="event-log-toggle">Event Log &#x25BC;</button>
         <div id="event-log-list" class="event-log-list" hidden></div>
+      </div>
+      <div id="webhook-section" class="webhook-section">
+        <button id="webhook-toggle" class="event-log-toggle">Webhook Settings &#x25BC;</button>
+        <div id="webhook-settings" class="webhook-settings" hidden>
+          <div class="webhook-input-row">
+            <input type="url" id="webhook-url" class="webhook-input" placeholder="Slack webhook URL (https://hooks.slack.com/...)" />
+            <button id="webhook-save" class="webhook-save-btn">Save</button>
+            <button id="webhook-test" class="webhook-test-btn">Test</button>
+          </div>
+          <div id="webhook-status" class="webhook-status"></div>
+        </div>
       </div>
     </div>
   </main>
@@ -134,12 +156,15 @@ var CONFIG = {
   var EVENT_LOG_MAX = 200;
   var eventLog = [];
   var notificationsEnabled = false;
+  var webhookUrl = '';
   try { var stored = localStorage.getItem('eventLog'); if (stored) eventLog = JSON.parse(stored); } catch (e) { eventLog = []; }
+  try { webhookUrl = localStorage.getItem('webhookUrl') || ''; } catch (e) { webhookUrl = ''; }
 
   function init() {
     renderSafePills();
     initEventLog();
     initNotifications();
+    initWebhookSettings();
     startPolling();
   }
 
@@ -394,6 +419,43 @@ var CONFIG = {
   function emitEvent(event) {
     logEvent(event);
     if (event.type === 'alert_start') sendNotification(event);
+    fireSlackWebhook(event);
+  }
+  function fireSlackWebhook(event) {
+    if (!webhookUrl) return;
+    var icon = event.type === 'alert_start' ? ':rotating_light:' : ':white_check_mark:';
+    var label = event.type === 'alert_start' ? 'Alert Started' : 'Alert Ended';
+    var text = icon + ' *' + label + '* \u2014 ' + event.displayNameEn + ' (' + event.regionName + ')' + '\nTime: ' + event.israelTime + ' (Israel)\nSource: Dashboard';
+    var body = 'payload=' + encodeURIComponent(JSON.stringify({ text: text }));
+    try { fetch(webhookUrl, { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body }); } catch (e) {}
+  }
+  function initWebhookSettings() {
+    var toggle = document.getElementById('webhook-toggle');
+    var settings = document.getElementById('webhook-settings');
+    var input = document.getElementById('webhook-url');
+    var saveBtn = document.getElementById('webhook-save');
+    var testBtn = document.getElementById('webhook-test');
+    var status = document.getElementById('webhook-status');
+    if (!toggle) return;
+    input.value = webhookUrl;
+    toggle.addEventListener('click', function () {
+      var collapsed = settings.hasAttribute('hidden');
+      if (collapsed) { settings.removeAttribute('hidden'); toggle.textContent = 'Webhook Settings \u25B2'; }
+      else { settings.setAttribute('hidden', ''); toggle.textContent = 'Webhook Settings \u25BC'; }
+    });
+    saveBtn.addEventListener('click', function () {
+      webhookUrl = input.value.trim();
+      try { localStorage.setItem('webhookUrl', webhookUrl); } catch (e) {}
+      status.textContent = webhookUrl ? '\u2705 Webhook URL saved' : '\u274C Webhook URL cleared';
+      setTimeout(function () { status.textContent = ''; }, 3000);
+    });
+    testBtn.addEventListener('click', function () {
+      if (!input.value.trim()) { status.textContent = '\u274C Enter a webhook URL first'; setTimeout(function () { status.textContent = ''; }, 3000); return; }
+      var text = ':test_tube: *Webhook Test* \u2014 Dashboard connection test successful!';
+      var body = 'payload=' + encodeURIComponent(JSON.stringify({ text: text }));
+      try { fetch(input.value.trim(), { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body }); status.textContent = '\uD83D\uDCE8 Test sent (check Slack)'; } catch (e) { status.textContent = '\u274C Failed'; }
+      setTimeout(function () { status.textContent = ''; }, 5000);
+    });
   }
   function initEventLog() {
     var toggle = document.getElementById('event-log-toggle');

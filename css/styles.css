@@ -401,6 +401,74 @@ main {
   font-size: 0.75rem;
 }
 
+/* Webhook Settings */
+.webhook-section {
+  margin-top: 4px;
+}
+
+.webhook-settings {
+  padding: 12px;
+  background: #1a1a1a;
+  border-radius: 0 0 8px 8px;
+}
+
+.webhook-input-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.webhook-input {
+  flex: 1;
+  background: #0d0d0d;
+  border: 1px solid #333;
+  color: #ccc;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-family: monospace;
+}
+
+.webhook-input:focus {
+  outline: none;
+  border-color: #555;
+}
+
+.webhook-save-btn,
+.webhook-test-btn {
+  padding: 8px 14px;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.webhook-save-btn {
+  background: #2196F3;
+  color: #fff;
+}
+
+.webhook-save-btn:hover {
+  background: #1976D2;
+}
+
+.webhook-test-btn {
+  background: #333;
+  color: #ccc;
+}
+
+.webhook-test-btn:hover {
+  background: #444;
+}
+
+.webhook-status {
+  margin-top: 8px;
+  font-size: 0.75rem;
+  color: #888;
+  min-height: 1em;
+}
+
 /* Responsive */
 @media (max-width: 480px) {
   header {

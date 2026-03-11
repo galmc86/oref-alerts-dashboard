@@ -13,15 +13,19 @@
   // Track regions ended by primary "ended" events so history fallback won't re-alert them
   var recentlyEndedRegions = {};
 
-  // Event log and notifications state
+  // Event log, notifications, and webhook state
   var eventLog = [];
   var notificationsEnabled = false;
+  var webhookUrl = '';
 
-  // Load persisted event log
+  // Load persisted state
   try {
     var stored = localStorage.getItem('eventLog');
     if (stored) eventLog = JSON.parse(stored);
   } catch (e) { eventLog = []; }
+  try {
+    webhookUrl = localStorage.getItem('webhookUrl') || '';
+  } catch (e) { webhookUrl = ''; }
 
   // --- Initialization ---
 
@@ -29,6 +33,7 @@
     renderSafePills();
     initEventLog();
     initNotifications();
+    initWebhookSettings();
     startPolling();
   }
 
@@ -404,6 +409,82 @@
     if (event.type === 'alert_start') {
       sendNotification(event);
     }
+    fireSlackWebhook(event);
+  }
+
+  function fireSlackWebhook(event) {
+    if (!webhookUrl) return;
+    var icon = event.type === 'alert_start' ? ':rotating_light:' : ':white_check_mark:';
+    var label = event.type === 'alert_start' ? 'Alert Started' : 'Alert Ended';
+    var text = icon + ' *' + label + '* \u2014 ' + event.displayNameEn +
+      ' (' + event.regionName + ')' +
+      '\nTime: ' + event.israelTime + ' (Israel)' +
+      '\nSource: Dashboard';
+    var body = 'payload=' + encodeURIComponent(JSON.stringify({ text: text }));
+    try {
+      fetch(webhookUrl, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body
+      });
+    } catch (e) { /* silently ignore */ }
+  }
+
+  // --- Webhook Settings ---
+
+  function initWebhookSettings() {
+    var toggle = document.getElementById('webhook-toggle');
+    var settings = document.getElementById('webhook-settings');
+    var input = document.getElementById('webhook-url');
+    var saveBtn = document.getElementById('webhook-save');
+    var testBtn = document.getElementById('webhook-test');
+    var status = document.getElementById('webhook-status');
+
+    if (!toggle) return;
+
+    // Populate input from stored URL
+    input.value = webhookUrl;
+
+    toggle.addEventListener('click', function () {
+      var collapsed = settings.hasAttribute('hidden');
+      if (collapsed) {
+        settings.removeAttribute('hidden');
+        toggle.textContent = 'Webhook Settings \u25B2';
+      } else {
+        settings.setAttribute('hidden', '');
+        toggle.textContent = 'Webhook Settings \u25BC';
+      }
+    });
+
+    saveBtn.addEventListener('click', function () {
+      webhookUrl = input.value.trim();
+      try { localStorage.setItem('webhookUrl', webhookUrl); } catch (e) {}
+      status.textContent = webhookUrl ? '\u2705 Webhook URL saved' : '\u274C Webhook URL cleared';
+      setTimeout(function () { status.textContent = ''; }, 3000);
+    });
+
+    testBtn.addEventListener('click', function () {
+      if (!input.value.trim()) {
+        status.textContent = '\u274C Enter a webhook URL first';
+        setTimeout(function () { status.textContent = ''; }, 3000);
+        return;
+      }
+      var text = ':test_tube: *Webhook Test* \u2014 Dashboard connection test successful!';
+      var body = 'payload=' + encodeURIComponent(JSON.stringify({ text: text }));
+      try {
+        fetch(input.value.trim(), {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: body
+        });
+        status.textContent = '\uD83D\uDCE8 Test message sent (check your Slack channel)';
+      } catch (e) {
+        status.textContent = '\u274C Failed to send test message';
+      }
+      setTimeout(function () { status.textContent = ''; }, 5000);
+    });
   }
 
   // --- Event Log ---
