@@ -35,6 +35,23 @@ main { padding: 20px; }
 .loading-spinner { width: 40px; height: 40px; border: 3px solid #2a2a2a; border-top-color: #4CAF50; border-radius: 50%; animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .loading-text { font-size: 0.85rem; color: #888; }
+.notify-btn { background: none; border: 1px solid #333; border-radius: 6px; padding: 4px 8px; cursor: pointer; font-size: 1rem; line-height: 1; transition: all 0.2s; }
+.notify-btn::before { content: '\1F515'; }
+.notify-btn.enabled { border-color: #4CAF50; }
+.notify-btn.enabled::before { content: '\1F514'; }
+.notify-btn.denied { border-color: #f44336; opacity: 0.5; cursor: not-allowed; }
+.notify-btn.denied::before { content: '\1F515'; }
+.event-log-toggle { display: block; width: 100%; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; color: #888; font-size: 0.8rem; font-weight: 600; padding: 10px 16px; margin-top: 28px; cursor: pointer; text-align: left; text-transform: uppercase; letter-spacing: 0.5px; font-family: inherit; transition: background 0.2s; }
+.event-log-toggle:hover { background: #222; }
+.event-log-list { margin-top: 8px; max-height: 300px; overflow-y: auto; border: 1px solid #2a2a2a; border-radius: 8px; background: #111; }
+.event-log-item { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-bottom: 1px solid #1a1a1a; font-size: 0.8rem; }
+.event-log-item:last-child { border-bottom: none; }
+.event-indicator { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.event-indicator-alert { background: #f44336; }
+.event-indicator-safe { background: #4CAF50; }
+.event-label { font-weight: 700; font-size: 0.7rem; text-transform: uppercase; min-width: 40px; color: #888; }
+.event-region { flex: 1; color: #ccc; }
+.event-time { color: #666; font-variant-numeric: tabular-nums; font-size: 0.75rem; }
   </style>
 </head>
 <body>
@@ -44,6 +61,7 @@ main { padding: 20px; }
       <span id="connection-dot" class="status-dot"></span>
     </div>
     <div class="header-right">
+      <button id="notify-btn" class="notify-btn" title="Enable notifications"></button>
       <span class="header-title">Israel Alert Monitor</span>
     </div>
   </header>
@@ -66,6 +84,10 @@ main { padding: 20px; }
           <span>Safe Regions</span>
         </div>
         <div class="safe-pills" id="safe-grid"></div>
+      </div>
+      <div id="event-log-section">
+        <button id="event-log-toggle" class="event-log-toggle">Event Log &#x25BC;</button>
+        <div id="event-log-list" class="event-log-list" hidden></div>
       </div>
     </div>
   </main>
@@ -108,11 +130,16 @@ var CONFIG = {
   var regionAlertTimes = {};
   var regionStates = {};
   var isFirstLoad = true;
-  // Track regions ended by primary "ended" events so history fallback won't re-alert them
   var recentlyEndedRegions = {};
+  var EVENT_LOG_MAX = 200;
+  var eventLog = [];
+  var notificationsEnabled = false;
+  try { var stored = localStorage.getItem('eventLog'); if (stored) eventLog = JSON.parse(stored); } catch (e) { eventLog = []; }
 
   function init() {
     renderSafePills();
+    initEventLog();
+    initNotifications();
     startPolling();
   }
 
@@ -298,12 +325,16 @@ var CONFIG = {
   function setRegionAlert(region, alertTime) {
     if (!regionStates[region.name]) {
       regionAlertTimes[region.name] = alertTime || getIsraelTime();
+      if (!isFirstLoad) { emitEvent(createEvent('alert_start', region)); }
     }
     regionStates[region.name] = true;
   }
 
   function setRegionSafe(region) {
-    if (regionStates[region.name]) { delete regionAlertTimes[region.name]; }
+    if (regionStates[region.name]) {
+      delete regionAlertTimes[region.name];
+      if (!isFirstLoad) { emitEvent(createEvent('alert_end', region)); }
+    }
     regionStates[region.name] = false;
   }
 
@@ -350,6 +381,73 @@ var CONFIG = {
   function parseAlertDate(dateStr) {
     var p = dateStr.split(' '), d = p[0].split('-'), t = p[1].split(':');
     return new Date(+d[0], +d[1] - 1, +d[2], +t[0], +t[1], +t[2]).getTime();
+  }
+
+  function createEvent(type, region) {
+    return { type: type, regionName: region.name, displayNameEn: region.displayNameEn, timestamp: new Date().toISOString(), israelTime: getIsraelTime() };
+  }
+  function emitEvent(event) {
+    logEvent(event);
+    if (event.type === 'alert_start') sendNotification(event);
+  }
+  function initEventLog() {
+    var toggle = document.getElementById('event-log-toggle');
+    var list = document.getElementById('event-log-list');
+    toggle.addEventListener('click', function () {
+      var collapsed = list.hasAttribute('hidden');
+      if (collapsed) { list.removeAttribute('hidden'); toggle.textContent = 'Event Log \u25B2'; }
+      else { list.setAttribute('hidden', ''); toggle.textContent = 'Event Log \u25BC'; }
+    });
+    renderEventLog();
+  }
+  function logEvent(event) {
+    eventLog.unshift(event);
+    if (eventLog.length > EVENT_LOG_MAX) eventLog = eventLog.slice(0, EVENT_LOG_MAX);
+    try { localStorage.setItem('eventLog', JSON.stringify(eventLog)); } catch (e) {}
+    renderEventLog();
+  }
+  function renderEventLog() {
+    var list = document.getElementById('event-log-list');
+    if (!list) return;
+    list.innerHTML = '';
+    eventLog.forEach(function (ev) {
+      var item = document.createElement('div');
+      item.className = 'event-log-item';
+      var ind = ev.type === 'alert_start' ? 'event-indicator-alert' : 'event-indicator-safe';
+      var label = ev.type === 'alert_start' ? 'ALERT' : 'SAFE';
+      item.innerHTML = '<span class="event-indicator ' + ind + '"></span><span class="event-label">' + label + '</span><span class="event-region">' + ev.displayNameEn + '</span><span class="event-time">' + ev.israelTime + '</span>';
+      list.appendChild(item);
+    });
+  }
+  function initNotifications() {
+    var btn = document.getElementById('notify-btn');
+    if (!('Notification' in window)) { btn.style.display = 'none'; return; }
+    if (Notification.permission === 'granted' && localStorage.getItem('notifyEnabled') === 'true') notificationsEnabled = true;
+    updateNotifyButton();
+    btn.addEventListener('click', function () {
+      if (Notification.permission === 'denied') return;
+      if (Notification.permission === 'granted') {
+        notificationsEnabled = !notificationsEnabled;
+        localStorage.setItem('notifyEnabled', notificationsEnabled ? 'true' : 'false');
+        updateNotifyButton();
+      } else {
+        Notification.requestPermission().then(function (r) {
+          if (r === 'granted') { notificationsEnabled = true; localStorage.setItem('notifyEnabled', 'true'); }
+          updateNotifyButton();
+        });
+      }
+    });
+  }
+  function updateNotifyButton() {
+    var btn = document.getElementById('notify-btn');
+    btn.className = 'notify-btn';
+    if (Notification.permission === 'denied') { btn.classList.add('denied'); btn.title = 'Notifications blocked'; }
+    else if (notificationsEnabled) { btn.classList.add('enabled'); btn.title = 'Notifications enabled (click to disable)'; }
+    else { btn.title = 'Enable notifications'; }
+  }
+  function sendNotification(event) {
+    if (!notificationsEnabled || Notification.permission !== 'granted' || !document.hidden) return;
+    new Notification('Alert: ' + event.displayNameEn, { body: event.displayNameEn + ' - Alert started at ' + event.israelTime, tag: 'oref-alert-' + event.regionName, requireInteraction: true });
   }
 
   document.addEventListener('DOMContentLoaded', init);

@@ -3,9 +3,13 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 
+const url = require('url');
+const CONFIG = require('./js/config.js');
+
 const PORT = 8080;
 const ROOT = __dirname;
 const MOCK = process.argv.includes('--mock');
+const WEBHOOK_URL = process.env.WEBHOOK_URL || CONFIG.WEBHOOK_URL;
 
 const MIME = {
   '.html': 'text/html',
@@ -82,7 +86,7 @@ var server = http.createServer(function (req, res) {
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
       'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, OPTIONS',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type, X-Requested-With',
     });
     res.end();
@@ -117,6 +121,196 @@ var server = http.createServer(function (req, res) {
   });
 });
 
+// --- Server-side alert polling & webhook ---
+
+var serverRegionStates = {};
+var isFirstServerPoll = true;
+
+function getIsraelTimeStr() {
+  return new Date().toLocaleTimeString('en-US', { hour12: false, timeZone: 'Asia/Jerusalem' });
+}
+
+function isRegionMatchedServer(region, cities) {
+  return cities.some(function (city) {
+    return region.matchPatterns.some(function (pattern) {
+      return city.includes(pattern);
+    });
+  });
+}
+
+function fetchJson(targetUrl) {
+  return new Promise(function (resolve, reject) {
+    var transport = targetUrl.startsWith('https') ? https : http;
+    transport.get(targetUrl, { headers: OREF_HEADERS }, function (res) {
+      var chunks = [];
+      res.on('data', function (chunk) { chunks.push(chunk); });
+      res.on('end', function () {
+        var body = Buffer.concat(chunks).toString('utf8');
+        if (!body || body.trim() === '' || body.trim() === '[]') {
+          resolve(null);
+          return;
+        }
+        try { resolve(JSON.parse(body)); } catch (e) { reject(e); }
+      });
+    }).on('error', reject);
+  });
+}
+
+function fireWebhook(event) {
+  if (!WEBHOOK_URL) return;
+  var postData = JSON.stringify(event);
+  try {
+    var urlObj = new url.URL(WEBHOOK_URL);
+    var transport = WEBHOOK_URL.startsWith('https') ? https : http;
+    var options = {
+      hostname: urlObj.hostname,
+      port: urlObj.port || (WEBHOOK_URL.startsWith('https') ? 443 : 80),
+      path: urlObj.pathname + urlObj.search,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(postData)
+      }
+    };
+    var req = transport.request(options, function (res) { res.resume(); });
+    req.on('error', function (err) {
+      console.error('Webhook error:', err.message);
+    });
+    req.write(postData);
+    req.end();
+  } catch (err) {
+    console.error('Webhook error:', err.message);
+  }
+}
+
+function serverPoll() {
+  var alertsUrl = MOCK
+    ? 'http://localhost:' + PORT + '/api/alerts'
+    : 'https://www.oref.org.il/WarningMessages/alert/alerts.json';
+  var historyUrl = MOCK
+    ? 'http://localhost:' + PORT + '/api/history'
+    : 'https://www.oref.org.il/warningMessages/alert/History/AlertsHistory.json';
+
+  fetchJson(alertsUrl).then(function (primary) {
+    var isAlertOver = primary && primary.title && primary.title.includes('\u05D4\u05E1\u05EA\u05D9\u05D9\u05DD');
+
+    if (primary && primary.data && primary.data.length > 0 && isAlertOver) {
+      // "Ended" event — set matched regions safe
+      var endedCities = primary.data;
+      CONFIG.REGIONS.forEach(function (region) {
+        if (isRegionMatchedServer(region, endedCities) && serverRegionStates[region.name]) {
+          serverRegionStates[region.name] = false;
+          if (!isFirstServerPoll) {
+            console.log('[WEBHOOK] Alert ended:', region.displayNameEn);
+            fireWebhook({
+              type: 'alert_end',
+              regionName: region.name,
+              displayNameEn: region.displayNameEn,
+              timestamp: new Date().toISOString(),
+              israelTime: getIsraelTimeStr()
+            });
+          }
+        }
+      });
+    } else if (primary && primary.data && primary.data.length > 0) {
+      // Active alerts from primary
+      var alertedCities = primary.data;
+      CONFIG.REGIONS.forEach(function (region) {
+        var matched = isRegionMatchedServer(region, alertedCities);
+        if (matched && !serverRegionStates[region.name]) {
+          serverRegionStates[region.name] = true;
+          if (!isFirstServerPoll) {
+            console.log('[WEBHOOK] Alert started:', region.displayNameEn);
+            fireWebhook({
+              type: 'alert_start',
+              regionName: region.name,
+              displayNameEn: region.displayNameEn,
+              timestamp: new Date().toISOString(),
+              israelTime: getIsraelTimeStr()
+            });
+          }
+        }
+      });
+    } else {
+      // No active primary — use history to determine state
+      return fetchJson(historyUrl).then(function (entries) {
+        var activeCities = [];
+        if (Array.isArray(entries) && entries.length > 0) {
+          var cutoff = Date.now() - CONFIG.HISTORY_LOOKBACK_MS;
+          var cityEndedTime = {};
+          var cityActiveTime = {};
+
+          entries.forEach(function (e) {
+            var parts = e.alertDate.split(' ');
+            var dateParts = parts[0].split('-');
+            var timeParts = parts[1].split(':');
+            var time = new Date(
+              parseInt(dateParts[0]), parseInt(dateParts[1]) - 1, parseInt(dateParts[2]),
+              parseInt(timeParts[0]), parseInt(timeParts[1]), parseInt(timeParts[2])
+            ).getTime();
+            if (time < cutoff) return;
+
+            var city = e.data;
+            var isEnded = e.title && e.title.includes('\u05D4\u05E1\u05EA\u05D9\u05D9\u05DD');
+            if (isEnded) {
+              if (!cityEndedTime[city] || time > cityEndedTime[city]) cityEndedTime[city] = time;
+            } else {
+              if (!cityActiveTime[city] || time > cityActiveTime[city]) cityActiveTime[city] = time;
+            }
+          });
+
+          Object.keys(cityActiveTime).forEach(function (city) {
+            if (!cityEndedTime[city] || cityActiveTime[city] > cityEndedTime[city]) {
+              activeCities.push(city);
+            }
+          });
+        }
+
+        CONFIG.REGIONS.forEach(function (region) {
+          var matched = isRegionMatchedServer(region, activeCities);
+          var prev = serverRegionStates[region.name] || false;
+          if (matched && !prev) {
+            serverRegionStates[region.name] = true;
+            if (!isFirstServerPoll) {
+              console.log('[WEBHOOK] Alert started:', region.displayNameEn);
+              fireWebhook({
+                type: 'alert_start',
+                regionName: region.name,
+                displayNameEn: region.displayNameEn,
+                timestamp: new Date().toISOString(),
+                israelTime: getIsraelTimeStr()
+              });
+            }
+          } else if (!matched && prev) {
+            serverRegionStates[region.name] = false;
+            if (!isFirstServerPoll) {
+              console.log('[WEBHOOK] Alert ended:', region.displayNameEn);
+              fireWebhook({
+                type: 'alert_end',
+                regionName: region.name,
+                displayNameEn: region.displayNameEn,
+                timestamp: new Date().toISOString(),
+                israelTime: getIsraelTimeStr()
+              });
+            }
+          }
+        });
+      });
+    }
+  }).then(function () {
+    isFirstServerPoll = false;
+  }).catch(function (err) {
+    console.error('Server poll error:', err.message);
+  });
+}
+
+function startServerPolling() {
+  if (!WEBHOOK_URL) return;
+  console.log('Webhook polling active — sending to:', WEBHOOK_URL);
+  serverPoll();
+  setInterval(serverPoll, CONFIG.POLL_INTERVAL_MS);
+}
+
 server.listen(PORT, function () {
   console.log('Oref Dashboard running at http://localhost:' + PORT);
   if (MOCK) {
@@ -124,4 +318,5 @@ server.listen(PORT, function () {
   } else {
     console.log('Proxy: /api/alerts and /api/history');
   }
+  startServerPolling();
 });
