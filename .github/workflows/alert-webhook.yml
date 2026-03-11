@@ -1,0 +1,21 @@
+name: Alert Webhook Check
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  check-alerts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: /tmp/alert-state.json
+          key: alert-state
+      - name: Check OREF alerts and fire webhook
+        env:
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+          STATE_FILE: /tmp/alert-state.json
+        run: node scripts/check-alerts.js
