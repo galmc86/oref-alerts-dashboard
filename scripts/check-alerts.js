@@ -13,14 +13,23 @@ const CONFIG = require('../js/config.js');
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
 const STATE_FILE = process.env.STATE_FILE || '/tmp/alert-state.json';
 
-const OREF_HEADERS = {
-  'Referer': 'https://www.oref.org.il/',
-  'X-Requested-With': 'XMLHttpRequest',
-};
+const AZURE_PROXY = 'https://proxyserver-bgdcbvbaebbfczer.israelcentral-01.azurewebsites.net/proxy';
 
 function fetchJson(targetUrl) {
   return new Promise(function (resolve, reject) {
-    https.get(targetUrl, { headers: OREF_HEADERS }, function (res) {
+    var postData = JSON.stringify({ url: targetUrl });
+    var urlObj = new URL(AZURE_PROXY);
+    var options = {
+      hostname: urlObj.hostname,
+      port: 443,
+      path: urlObj.pathname,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(postData)
+      }
+    };
+    var req = https.request(options, function (res) {
       var chunks = [];
       res.on('data', function (chunk) { chunks.push(chunk); });
       res.on('end', function () {
@@ -31,7 +40,10 @@ function fetchJson(targetUrl) {
         }
         try { resolve(JSON.parse(body)); } catch (e) { reject(e); }
       });
-    }).on('error', reject);
+    });
+    req.on('error', reject);
+    req.write(postData);
+    req.end();
   });
 }
 
