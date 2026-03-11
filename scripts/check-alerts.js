@@ -122,68 +122,69 @@ async function run() {
   var events = [];
 
   try {
-    // Try primary alerts first
-    var primary = await fetchJson('https://www.oref.org.il/WarningMessages/alert/alerts.json');
-    var isAlertOver = primary && primary.title && primary.title.includes('\u05D4\u05E1\u05EA\u05D9\u05D9\u05DD');
+    // Fetch BOTH primary and history in parallel for complete coverage
+    var results = await Promise.all([
+      fetchJson('https://www.oref.org.il/WarningMessages/alert/alerts.json').catch(function () { return null; }),
+      fetchJson('https://www.oref.org.il/warningMessages/alert/History/AlertsHistory.json').catch(function () { return null; })
+    ]);
+    var primary = results[0];
+    var entries = results[1];
 
-    if (primary && primary.data && primary.data.length > 0 && isAlertOver) {
-      // Ended event — carry forward previous state, set matched regions safe
-      Object.keys(prevState).forEach(function (k) { newState[k] = prevState[k]; });
-      var endedCities = primary.data;
-      CONFIG.REGIONS.forEach(function (region) {
-        if (isRegionMatched(region, endedCities)) {
-          newState[region.name] = false;
-        }
-      });
-    } else if (primary && primary.data && primary.data.length > 0) {
-      // Active alerts
-      Object.keys(prevState).forEach(function (k) { newState[k] = prevState[k]; });
-      var alertedCities = primary.data;
-      CONFIG.REGIONS.forEach(function (region) {
-        if (isRegionMatched(region, alertedCities)) {
-          newState[region.name] = true;
-        }
-      });
-    } else {
-      // Fallback to history
-      var entries = await fetchJson('https://www.oref.org.il/warningMessages/alert/History/AlertsHistory.json');
-      var activeCities = [];
+    // Carry forward previous state
+    Object.keys(prevState).forEach(function (k) { newState[k] = prevState[k]; });
 
-      if (Array.isArray(entries) && entries.length > 0) {
-        var cutoff = Date.now() - CONFIG.HISTORY_LOOKBACK_MS;
-        var cityEndedTime = {};
-        var cityActiveTime = {};
-
-        entries.forEach(function (e) {
-          var parts = e.alertDate.split(' ');
-          var dateParts = parts[0].split('-');
-          var timeParts = parts[1].split(':');
-          var time = new Date(
-            parseInt(dateParts[0]), parseInt(dateParts[1]) - 1, parseInt(dateParts[2]),
-            parseInt(timeParts[0]), parseInt(timeParts[1]), parseInt(timeParts[2])
-          ).getTime();
-          if (time < cutoff) return;
-
-          var city = e.data;
-          var isEnded = e.title && e.title.includes('\u05D4\u05E1\u05EA\u05D9\u05D9\u05DD');
-          if (isEnded) {
-            if (!cityEndedTime[city] || time > cityEndedTime[city]) cityEndedTime[city] = time;
-          } else {
-            if (!cityActiveTime[city] || time > cityActiveTime[city]) cityActiveTime[city] = time;
-          }
-        });
-
-        Object.keys(cityActiveTime).forEach(function (city) {
-          if (!cityEndedTime[city] || cityActiveTime[city] > cityEndedTime[city]) {
-            activeCities.push(city);
-          }
-        });
+    // Build active/ended cities from primary endpoint
+    var primaryCities = [];
+    var endedCities = [];
+    if (primary && primary.data && primary.data.length > 0) {
+      var isAlertOver = primary.title && primary.title.includes('\u05D4\u05E1\u05EA\u05D9\u05D9\u05DD');
+      if (isAlertOver) {
+        endedCities = primary.data;
+      } else {
+        primaryCities = primary.data;
       }
+    }
 
-      CONFIG.REGIONS.forEach(function (region) {
-        newState[region.name] = isRegionMatched(region, activeCities);
+    // Build active cities from history (within lookback window)
+    var historyCities = [];
+    if (Array.isArray(entries) && entries.length > 0) {
+      var cutoff = Date.now() - CONFIG.HISTORY_LOOKBACK_MS;
+      var cityEndedTime = {};
+      var cityActiveTime = {};
+
+      entries.forEach(function (e) {
+        var parts = e.alertDate.split(' ');
+        var dateParts = parts[0].split('-');
+        var timeParts = parts[1].split(':');
+        var time = new Date(
+          parseInt(dateParts[0]), parseInt(dateParts[1]) - 1, parseInt(dateParts[2]),
+          parseInt(timeParts[0]), parseInt(timeParts[1]), parseInt(timeParts[2])
+        ).getTime();
+        if (time < cutoff) return;
+
+        var city = e.data;
+        var isEnded = e.title && e.title.includes('\u05D4\u05E1\u05EA\u05D9\u05D9\u05DD');
+        if (isEnded) {
+          if (!cityEndedTime[city] || time > cityEndedTime[city]) cityEndedTime[city] = time;
+        } else {
+          if (!cityActiveTime[city] || time > cityActiveTime[city]) cityActiveTime[city] = time;
+        }
+      });
+
+      Object.keys(cityActiveTime).forEach(function (city) {
+        if (!cityEndedTime[city] || cityActiveTime[city] > cityEndedTime[city]) {
+          historyCities.push(city);
+        }
       });
     }
+
+    // Merge: a region is active if matched by primary OR history, and not in ended list
+    CONFIG.REGIONS.forEach(function (region) {
+      var fromPrimary = isRegionMatched(region, primaryCities);
+      var fromHistory = isRegionMatched(region, historyCities);
+      var fromEnded = isRegionMatched(region, endedCities);
+      newState[region.name] = (fromPrimary || fromHistory) && !fromEnded;
+    });
 
     // Detect transitions (skip on first run)
     if (!isFirstRun) {

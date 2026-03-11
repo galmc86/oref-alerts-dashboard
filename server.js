@@ -145,7 +145,7 @@ function fetchJson(targetUrl) {
       var chunks = [];
       res.on('data', function (chunk) { chunks.push(chunk); });
       res.on('end', function () {
-        var body = Buffer.concat(chunks).toString('utf8');
+        var body = Buffer.concat(chunks).toString('utf8').replace(/^\uFEFF/, '');
         if (!body || body.trim() === '' || body.trim() === '[]') {
           resolve(null);
           return;
@@ -191,112 +191,93 @@ function serverPoll() {
     ? 'http://localhost:' + PORT + '/api/history'
     : 'https://www.oref.org.il/warningMessages/alert/History/AlertsHistory.json';
 
-  fetchJson(alertsUrl).then(function (primary) {
-    var isAlertOver = primary && primary.title && primary.title.includes('\u05D4\u05E1\u05EA\u05D9\u05D9\u05DD');
+  // Always fetch BOTH primary and history in parallel for complete coverage
+  Promise.all([
+    fetchJson(alertsUrl).catch(function () { return null; }),
+    fetchJson(historyUrl).catch(function () { return null; })
+  ]).then(function (results) {
+    var primary = results[0];
+    var entries = results[1];
 
-    if (primary && primary.data && primary.data.length > 0 && isAlertOver) {
-      // "Ended" event — set matched regions safe
-      var endedCities = primary.data;
-      CONFIG.REGIONS.forEach(function (region) {
-        if (isRegionMatchedServer(region, endedCities) && serverRegionStates[region.name]) {
-          serverRegionStates[region.name] = false;
-          if (!isFirstServerPoll) {
-            console.log('[WEBHOOK] Alert ended:', region.displayNameEn);
-            fireWebhook({
-              type: 'alert_end',
-              regionName: region.name,
-              displayNameEn: region.displayNameEn,
-              timestamp: new Date().toISOString(),
-              israelTime: getIsraelTimeStr()
-            });
-          }
+    // Build the set of active cities from primary endpoint
+    var primaryCities = [];
+    var endedCities = [];
+    if (primary && primary.data && primary.data.length > 0) {
+      var isAlertOver = primary.title && primary.title.includes('\u05D4\u05E1\u05EA\u05D9\u05D9\u05DD');
+      if (isAlertOver) {
+        endedCities = primary.data;
+      } else {
+        primaryCities = primary.data;
+      }
+    }
+
+    // Build the set of active cities from history (within lookback window)
+    var historyCities = [];
+    if (Array.isArray(entries) && entries.length > 0) {
+      var cutoff = Date.now() - CONFIG.HISTORY_LOOKBACK_MS;
+      var cityEndedTime = {};
+      var cityActiveTime = {};
+
+      entries.forEach(function (e) {
+        var parts = e.alertDate.split(' ');
+        var dateParts = parts[0].split('-');
+        var timeParts = parts[1].split(':');
+        var time = new Date(
+          parseInt(dateParts[0]), parseInt(dateParts[1]) - 1, parseInt(dateParts[2]),
+          parseInt(timeParts[0]), parseInt(timeParts[1]), parseInt(timeParts[2])
+        ).getTime();
+        if (time < cutoff) return;
+
+        var city = e.data;
+        var isEnded = e.title && e.title.includes('\u05D4\u05E1\u05EA\u05D9\u05D9\u05DD');
+        if (isEnded) {
+          if (!cityEndedTime[city] || time > cityEndedTime[city]) cityEndedTime[city] = time;
+        } else {
+          if (!cityActiveTime[city] || time > cityActiveTime[city]) cityActiveTime[city] = time;
         }
       });
-    } else if (primary && primary.data && primary.data.length > 0) {
-      // Active alerts from primary
-      var alertedCities = primary.data;
-      CONFIG.REGIONS.forEach(function (region) {
-        var matched = isRegionMatchedServer(region, alertedCities);
-        if (matched && !serverRegionStates[region.name]) {
-          serverRegionStates[region.name] = true;
-          if (!isFirstServerPoll) {
-            console.log('[WEBHOOK] Alert started:', region.displayNameEn);
-            fireWebhook({
-              type: 'alert_start',
-              regionName: region.name,
-              displayNameEn: region.displayNameEn,
-              timestamp: new Date().toISOString(),
-              israelTime: getIsraelTimeStr()
-            });
-          }
+
+      Object.keys(cityActiveTime).forEach(function (city) {
+        if (!cityEndedTime[city] || cityActiveTime[city] > cityEndedTime[city]) {
+          historyCities.push(city);
         }
-      });
-    } else {
-      // No active primary — use history to determine state
-      return fetchJson(historyUrl).then(function (entries) {
-        var activeCities = [];
-        if (Array.isArray(entries) && entries.length > 0) {
-          var cutoff = Date.now() - CONFIG.HISTORY_LOOKBACK_MS;
-          var cityEndedTime = {};
-          var cityActiveTime = {};
-
-          entries.forEach(function (e) {
-            var parts = e.alertDate.split(' ');
-            var dateParts = parts[0].split('-');
-            var timeParts = parts[1].split(':');
-            var time = new Date(
-              parseInt(dateParts[0]), parseInt(dateParts[1]) - 1, parseInt(dateParts[2]),
-              parseInt(timeParts[0]), parseInt(timeParts[1]), parseInt(timeParts[2])
-            ).getTime();
-            if (time < cutoff) return;
-
-            var city = e.data;
-            var isEnded = e.title && e.title.includes('\u05D4\u05E1\u05EA\u05D9\u05D9\u05DD');
-            if (isEnded) {
-              if (!cityEndedTime[city] || time > cityEndedTime[city]) cityEndedTime[city] = time;
-            } else {
-              if (!cityActiveTime[city] || time > cityActiveTime[city]) cityActiveTime[city] = time;
-            }
-          });
-
-          Object.keys(cityActiveTime).forEach(function (city) {
-            if (!cityEndedTime[city] || cityActiveTime[city] > cityEndedTime[city]) {
-              activeCities.push(city);
-            }
-          });
-        }
-
-        CONFIG.REGIONS.forEach(function (region) {
-          var matched = isRegionMatchedServer(region, activeCities);
-          var prev = serverRegionStates[region.name] || false;
-          if (matched && !prev) {
-            serverRegionStates[region.name] = true;
-            if (!isFirstServerPoll) {
-              console.log('[WEBHOOK] Alert started:', region.displayNameEn);
-              fireWebhook({
-                type: 'alert_start',
-                regionName: region.name,
-                displayNameEn: region.displayNameEn,
-                timestamp: new Date().toISOString(),
-                israelTime: getIsraelTimeStr()
-              });
-            }
-          } else if (!matched && prev) {
-            serverRegionStates[region.name] = false;
-            if (!isFirstServerPoll) {
-              console.log('[WEBHOOK] Alert ended:', region.displayNameEn);
-              fireWebhook({
-                type: 'alert_end',
-                regionName: region.name,
-                displayNameEn: region.displayNameEn,
-                timestamp: new Date().toISOString(),
-                israelTime: getIsraelTimeStr()
-              });
-            }
-          }
-        });
       });
     }
+
+    // Merge: a region is active if matched by primary OR history, and not in ended list
+    CONFIG.REGIONS.forEach(function (region) {
+      var fromPrimary = isRegionMatchedServer(region, primaryCities);
+      var fromHistory = isRegionMatchedServer(region, historyCities);
+      var fromEnded = isRegionMatchedServer(region, endedCities);
+      var matched = (fromPrimary || fromHistory) && !fromEnded;
+      var prev = serverRegionStates[region.name] || false;
+
+      if (matched && !prev) {
+        serverRegionStates[region.name] = true;
+        if (!isFirstServerPoll) {
+          console.log('[WEBHOOK] Alert started:', region.displayNameEn);
+          fireWebhook({
+            type: 'alert_start',
+            regionName: region.name,
+            displayNameEn: region.displayNameEn,
+            timestamp: new Date().toISOString(),
+            israelTime: getIsraelTimeStr()
+          });
+        }
+      } else if (!matched && prev) {
+        serverRegionStates[region.name] = false;
+        if (!isFirstServerPoll) {
+          console.log('[WEBHOOK] Alert ended:', region.displayNameEn);
+          fireWebhook({
+            type: 'alert_end',
+            regionName: region.name,
+            displayNameEn: region.displayNameEn,
+            timestamp: new Date().toISOString(),
+            israelTime: getIsraelTimeStr()
+          });
+        }
+      }
+    });
   }).then(function () {
     isFirstServerPoll = false;
   }).catch(function (err) {
