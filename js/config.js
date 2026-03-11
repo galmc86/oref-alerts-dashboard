@@ -3,6 +3,8 @@ const CONFIG = {
   HISTORY_URL: '/api/history',
   POLL_INTERVAL_MS: 15000,
   HISTORY_LOOKBACK_MS: 30 * 60 * 1000, // 30 minutes
+  WEBHOOK_URL: '',                      // empty = disabled; set to Slack/Zapier/etc webhook URL
+  EVENT_LOG_MAX: 200,                   // max event log entries in localStorage
 
   REGIONS: [
     { id: 1,  name: 'telaviv',          cityId: 24, displayName: 'תל אביב-יפו',        displayNameEn: 'Tel Aviv',         orefArea: 'תל אביב - יפו | אזור דן',            orefAreaEn: 'Tel Aviv - Jaffa | Dan Area',            matchPatterns: ['תל אביב'] },
@@ -26,3 +28,5 @@ const CONFIG = {
     { id: 27, name: 'yokneam',           cityId: 63, displayName: 'יוקנעם המושבה',       displayNameEn: 'Yokneam',          orefArea: 'יוקנעם המושבה | אזור וואדי ערה',      orefAreaEn: 'Yokneam | Wadi Ara Area',                matchPatterns: ['יוקנעם', 'יקנעם'] },
   ]
 };
+
+if (typeof module !== 'undefined') module.exports = CONFIG;

@@ -13,10 +13,22 @@
   // Track regions ended by primary "ended" events so history fallback won't re-alert them
   var recentlyEndedRegions = {};
 
+  // Event log and notifications state
+  var eventLog = [];
+  var notificationsEnabled = false;
+
+  // Load persisted event log
+  try {
+    var stored = localStorage.getItem('eventLog');
+    if (stored) eventLog = JSON.parse(stored);
+  } catch (e) { eventLog = []; }
+
   // --- Initialization ---
 
   function init() {
     renderSafePills();
+    initEventLog();
+    initNotifications();
     startPolling();
   }
 
@@ -268,6 +280,9 @@
   function setRegionAlert(region, alertTime) {
     if (!regionStates[region.name]) {
       regionAlertTimes[region.name] = alertTime || getIsraelTime();
+      if (!isFirstLoad) {
+        emitEvent(createEvent('alert_start', region));
+      }
     }
     regionStates[region.name] = true;
   }
@@ -275,6 +290,9 @@
   function setRegionSafe(region) {
     if (regionStates[region.name]) {
       delete regionAlertTimes[region.name];
+      if (!isFirstLoad) {
+        emitEvent(createEvent('alert_end', region));
+      }
     }
     regionStates[region.name] = false;
   }
@@ -360,6 +378,135 @@
       parseInt(timeParts[1]),
       parseInt(timeParts[2])
     ).getTime();
+  }
+
+  // --- Event System ---
+
+  function createEvent(type, region) {
+    var now = new Date();
+    return {
+      type: type,
+      regionName: region.name,
+      displayNameEn: region.displayNameEn,
+      timestamp: now.toISOString(),
+      israelTime: getIsraelTime()
+    };
+  }
+
+  function emitEvent(event) {
+    logEvent(event);
+    if (event.type === 'alert_start') {
+      sendNotification(event);
+    }
+  }
+
+  // --- Event Log ---
+
+  function initEventLog() {
+    var toggle = document.getElementById('event-log-toggle');
+    var list = document.getElementById('event-log-list');
+    toggle.addEventListener('click', function () {
+      var isCollapsed = list.hasAttribute('hidden');
+      if (isCollapsed) {
+        list.removeAttribute('hidden');
+        toggle.textContent = 'Event Log \u25B2';
+      } else {
+        list.setAttribute('hidden', '');
+        toggle.textContent = 'Event Log \u25BC';
+      }
+    });
+    renderEventLog();
+  }
+
+  function logEvent(event) {
+    eventLog.unshift(event);
+    if (eventLog.length > CONFIG.EVENT_LOG_MAX) {
+      eventLog = eventLog.slice(0, CONFIG.EVENT_LOG_MAX);
+    }
+    persistEventLog();
+    renderEventLog();
+  }
+
+  function persistEventLog() {
+    try {
+      localStorage.setItem('eventLog', JSON.stringify(eventLog));
+    } catch (e) { /* localStorage full or unavailable */ }
+  }
+
+  function renderEventLog() {
+    var list = document.getElementById('event-log-list');
+    if (!list) return;
+    list.innerHTML = '';
+    eventLog.forEach(function (event) {
+      var item = document.createElement('div');
+      item.className = 'event-log-item';
+      var indicator = event.type === 'alert_start' ? 'event-indicator-alert' : 'event-indicator-safe';
+      var label = event.type === 'alert_start' ? 'ALERT' : 'SAFE';
+      item.innerHTML =
+        '<span class="event-indicator ' + indicator + '"></span>' +
+        '<span class="event-label">' + label + '</span>' +
+        '<span class="event-region">' + event.displayNameEn + '</span>' +
+        '<span class="event-time">' + event.israelTime + '</span>';
+      list.appendChild(item);
+    });
+  }
+
+  // --- Browser Notifications ---
+
+  function initNotifications() {
+    var btn = document.getElementById('notify-btn');
+    if (!('Notification' in window)) {
+      btn.style.display = 'none';
+      return;
+    }
+
+    if (Notification.permission === 'granted' && localStorage.getItem('notifyEnabled') === 'true') {
+      notificationsEnabled = true;
+    }
+    updateNotifyButton();
+
+    btn.addEventListener('click', function () {
+      if (Notification.permission === 'denied') return;
+
+      if (Notification.permission === 'granted') {
+        notificationsEnabled = !notificationsEnabled;
+        localStorage.setItem('notifyEnabled', notificationsEnabled ? 'true' : 'false');
+        updateNotifyButton();
+      } else {
+        Notification.requestPermission().then(function (result) {
+          if (result === 'granted') {
+            notificationsEnabled = true;
+            localStorage.setItem('notifyEnabled', 'true');
+          }
+          updateNotifyButton();
+        });
+      }
+    });
+  }
+
+  function updateNotifyButton() {
+    var btn = document.getElementById('notify-btn');
+    btn.className = 'notify-btn';
+    if (Notification.permission === 'denied') {
+      btn.classList.add('denied');
+      btn.title = 'Notifications blocked by browser';
+    } else if (notificationsEnabled) {
+      btn.classList.add('enabled');
+      btn.title = 'Notifications enabled (click to disable)';
+    } else {
+      btn.title = 'Enable notifications';
+    }
+  }
+
+  function sendNotification(event) {
+    if (!notificationsEnabled || Notification.permission !== 'granted') return;
+    if (!document.hidden) return;
+
+    new Notification('Alert: ' + event.displayNameEn, {
+      body: event.displayNameEn + ' - Alert started at ' + event.israelTime,
+      tag: 'oref-alert-' + event.regionName,
+      requireInteraction: true
+    });
   }
 
   // --- Start ---
