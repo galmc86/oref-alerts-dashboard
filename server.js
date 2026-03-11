@@ -10,6 +10,7 @@ const PORT = 8080;
 const ROOT = __dirname;
 const MOCK = process.argv.includes('--mock');
 const WEBHOOK_URL = process.env.WEBHOOK_URL || CONFIG.WEBHOOK_URL;
+const SERVER_POLL_MS = 5000; // Server polls every 5s (faster than client's 15s to catch brief alerts)
 
 const MIME = {
   '.html': 'text/html',
@@ -289,7 +290,8 @@ function startServerPolling() {
   if (!WEBHOOK_URL) return;
   console.log('Webhook polling active — sending to:', WEBHOOK_URL);
   serverPoll();
-  setInterval(serverPoll, CONFIG.POLL_INTERVAL_MS);
+  console.log('Polling every', SERVER_POLL_MS / 1000, 'seconds');
+  setInterval(serverPoll, SERVER_POLL_MS);
 }
 
 server.listen(PORT, function () {
