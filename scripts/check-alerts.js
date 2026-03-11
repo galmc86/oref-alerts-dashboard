@@ -61,12 +61,8 @@ function getIsraelTime() {
 
 function fireWebhook(event) {
   if (!WEBHOOK_URL) return Promise.resolve();
-  var icon = event.type === 'alert_start' ? ':rotating_light:' : ':white_check_mark:';
-  var label = event.type === 'alert_start' ? 'Alert Started' : 'Alert Ended';
-  var slackText = icon + ' *' + label + '* — ' + event.displayNameEn +
-    ' (' + event.regionName + ')' +
-    '\nTime: ' + event.israelTime + ' (Israel)';
-  var postData = 'payload=' + encodeURIComponent(JSON.stringify({ text: slackText }));
+  event.source = 'GitHub Actions';
+  var postData = JSON.stringify(event);
   return new Promise(function (resolve) {
     try {
       var urlObj = new URL(WEBHOOK_URL);
@@ -76,13 +72,17 @@ function fireWebhook(event) {
         path: urlObj.pathname + urlObj.search,
         method: 'POST',
         headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
+          'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(postData)
         }
       };
       var req = https.request(options, function (res) {
-        res.resume();
-        res.on('end', resolve);
+        var chunks = [];
+        res.on('data', function (c) { chunks.push(c); });
+        res.on('end', function () {
+          console.log('Webhook response:', Buffer.concat(chunks).toString());
+          resolve();
+        });
       });
       req.on('error', function (err) {
         console.error('Webhook error:', err.message);

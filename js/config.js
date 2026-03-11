@@ -3,7 +3,8 @@ const CONFIG = {
   HISTORY_URL: '/api/history',
   POLL_INTERVAL_MS: 15000,
   HISTORY_LOOKBACK_MS: 30 * 60 * 1000, // 30 minutes
-  WEBHOOK_URL: '',                      // loaded from localStorage at runtime
+  WEBHOOK_URL: '',                      // used by server-side scripts (env var)
+  WEBHOOK_PROXY_URL: '',                // client sends events here; proxy forwards to Slack
   EVENT_LOG_MAX: 200,                   // max event log entries in localStorage
 
   REGIONS: [
