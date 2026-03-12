@@ -1,67 +1,60 @@
+const express = require('express');
+const cors = require('cors');
 const http = require('http');
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
 
-const url = require('url');
 const CONFIG = require('./js/config.js');
 
-const PORT = 8080;
+const app = express();
+const PORT = process.env.PORT || 8080;
 const ROOT = __dirname;
 const MOCK = process.argv.includes('--mock');
-const WEBHOOK_URL = process.env.WEBHOOK_URL || CONFIG.WEBHOOK_URL;
-const SERVER_POLL_MS = 5000; // Server polls every 5s (faster than client's 15s to catch brief alerts)
+const SERVER_POLL_MS = 5000;
 
-const MIME = {
-  '.html': 'text/html',
-  '.css': 'text/css',
-  '.js': 'application/javascript',
-  '.json': 'application/json',
-  '.svg': 'image/svg+xml',
-  '.png': 'image/png',
-  '.ico': 'image/x-icon',
-};
+// Webhook secrets from environment variables
+const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL || '';
+const GOOGLE_SHEET_WEBHOOK_URL = process.env.GOOGLE_SHEET_WEBHOOK_URL || '';
 
 const OREF_HEADERS = {
   'Referer': 'https://www.oref.org.il/',
   'X-Requested-With': 'XMLHttpRequest',
 };
 
+// --- Middleware ---
+
+app.use(cors());
+app.use(express.json());
+
 // --- Mock helpers ---
 
 function getIsraelDateStr(offsetMinutes) {
   var d = new Date(Date.now() - offsetMinutes * 60000);
-  var iso = d.toLocaleString('sv-SE', { timeZone: 'Asia/Jerusalem' }); // "YYYY-MM-DD HH:MM:SS"
+  var iso = d.toLocaleString('sv-SE', { timeZone: 'Asia/Jerusalem' });
   return iso.replace('T', ' ');
 }
 
-function serveMockAlerts(res) {
+function serveMockAlerts(req, res) {
   var mockFile = process.argv.includes('--history-only') ? 'alerts-empty.json' : 'alerts.json';
   var data = fs.readFileSync(path.join(ROOT, 'mocks', mockFile), 'utf8');
-  res.writeHead(200, {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Access-Control-Allow-Origin': '*',
-    'Cache-Control': 'no-cache, no-store',
-  });
-  res.end(data);
+  res.set('Content-Type', 'application/json; charset=utf-8');
+  res.set('Cache-Control', 'no-cache, no-store');
+  res.send(data);
 }
 
-function serveMockHistory(res) {
+function serveMockHistory(req, res) {
   var raw = fs.readFileSync(path.join(ROOT, 'mocks', 'history.json'), 'utf8');
   var entries = JSON.parse(raw);
-  // Inject recent timestamps so entries fall within the 30-minute lookback window
   entries.forEach(function (entry, i) {
-    entry.alertDate = getIsraelDateStr(2 + i); // 2, 3, 4 minutes ago
+    entry.alertDate = getIsraelDateStr(2 + i);
   });
-  res.writeHead(200, {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Access-Control-Allow-Origin': '*',
-    'Cache-Control': 'no-cache, no-store',
-  });
-  res.end(JSON.stringify(entries));
+  res.set('Content-Type', 'application/json; charset=utf-8');
+  res.set('Cache-Control', 'no-cache, no-store');
+  res.json(entries);
 }
 
-// --- Oref proxy ---
+// --- OREF proxy helper ---
 
 function proxyOref(targetUrl, res) {
   https.get(targetUrl, { headers: OREF_HEADERS }, function (proxyRes) {
@@ -69,58 +62,147 @@ function proxyOref(targetUrl, res) {
     proxyRes.on('data', function (chunk) { chunks.push(chunk); });
     proxyRes.on('end', function () {
       var body = Buffer.concat(chunks);
-      res.writeHead(proxyRes.statusCode, {
-        'Content-Type': 'application/json; charset=utf-8',
-        'Access-Control-Allow-Origin': '*',
-        'Cache-Control': 'no-cache, no-store',
-      });
-      res.end(body);
+      res.set('Content-Type', 'application/json; charset=utf-8');
+      res.set('Cache-Control', 'no-cache, no-store');
+      res.status(proxyRes.statusCode).send(body);
     });
   }).on('error', function (err) {
-    res.writeHead(502, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: err.message }));
+    res.status(502).json({ error: err.message });
   });
 }
 
-var server = http.createServer(function (req, res) {
-  // CORS preflight
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204, {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, X-Requested-With',
-    });
-    res.end();
-    return;
-  }
+// --- API Routes ---
 
-  // API endpoints (mock or proxy)
-  if (req.url === '/api/alerts') {
-    if (MOCK) { serveMockAlerts(res); } else { proxyOref('https://www.oref.org.il/WarningMessages/alert/alerts.json', res); }
-    return;
-  }
-  if (req.url === '/api/history') {
-    if (MOCK) { serveMockHistory(res); } else { proxyOref('https://www.oref.org.il/warningMessages/alert/History/AlertsHistory.json', res); }
-    return;
-  }
-
-  // Static file serving
-  var filePath = req.url === '/' ? '/index.html' : req.url.split('?')[0];
-  filePath = path.join(ROOT, filePath);
-
-  var ext = path.extname(filePath);
-  var contentType = MIME[ext] || 'application/octet-stream';
-
-  fs.readFile(filePath, function (err, data) {
-    if (err) {
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
-      res.end('Not Found');
-      return;
-    }
-    res.writeHead(200, { 'Content-Type': contentType });
-    res.end(data);
-  });
+// GET /api/alerts — OREF alerts proxy (used by dashboard client)
+app.get('/api/alerts', function (req, res) {
+  if (MOCK) return serveMockAlerts(req, res);
+  proxyOref('https://www.oref.org.il/WarningMessages/alert/alerts.json', res);
 });
+
+// GET /api/history — OREF history proxy (used by dashboard client)
+app.get('/api/history', function (req, res) {
+  if (MOCK) return serveMockHistory(req, res);
+  proxyOref('https://www.oref.org.il/warningMessages/alert/History/AlertsHistory.json', res);
+});
+
+// GET /alerts — short alias (used by proxy/server.js clients)
+app.get('/alerts', function (req, res) {
+  if (MOCK) return serveMockAlerts(req, res);
+  proxyOref('https://www.oref.org.il/WarningMessages/alert/alerts.json', res);
+});
+
+// GET /history — short alias
+app.get('/history', function (req, res) {
+  if (MOCK) return serveMockHistory(req, res);
+  proxyOref('https://www.oref.org.il/warningMessages/alert/History/AlertsHistory.json', res);
+});
+
+// POST /proxy — generic HTTP proxy (replaces C# ProxyController)
+// Used by GitHub Actions check-alerts.js to reach OREF from non-Israeli IPs
+app.post('/proxy', async function (req, res) {
+  try {
+    var proxyReq = req.body;
+    var targetUrl = proxyReq.url;
+    var method = (proxyReq.method || 'GET').toUpperCase();
+    var headers = proxyReq.headers || {};
+    var body = proxyReq.body || '';
+
+    var response = await fetch(targetUrl, {
+      method: method,
+      headers: headers,
+      body: method !== 'GET' && method !== 'HEAD' ? body : undefined,
+    });
+
+    var responseBody = await response.text();
+    var contentType = response.headers.get('content-type') || 'text/plain';
+    res.set('Content-Type', contentType);
+    res.status(response.status).send(responseBody);
+  } catch (err) {
+    console.error('Proxy error:', err.message);
+    res.status(502).json({ error: err.message });
+  }
+});
+
+// POST /webhook — unified webhook relay (replaces C# WebhookController)
+// Accepts alert events and forwards to Slack + Google Sheets
+app.post('/webhook', async function (req, res) {
+  var event = req.body;
+  var results = {};
+
+  if (SLACK_WEBHOOK_URL) {
+    results.slack = await sendSlack(event);
+  }
+  if (GOOGLE_SHEET_WEBHOOK_URL) {
+    results.sheets = await sendGoogleSheet(event);
+  }
+
+  if (Object.keys(results).length === 0) {
+    return res.status(503).json({ error: 'No webhook URLs configured' });
+  }
+  res.json(results);
+});
+
+// POST /slack-webhook — direct Slack relay (kept for backward compatibility)
+app.post('/slack-webhook', async function (req, res) {
+  if (!SLACK_WEBHOOK_URL) {
+    return res.status(503).json({ error: 'Webhook not configured' });
+  }
+  var ok = await sendSlack(req.body);
+  res.json({ ok: ok });
+});
+
+// --- Slack / Google Sheets helpers ---
+
+async function sendSlack(event) {
+  try {
+    var icon = event.type === 'alert_start' ? ':rotating_light:' : ':white_check_mark:';
+    var label = event.type === 'alert_start' ? 'Alert Started' : 'Alert Ended';
+    var source = event.source || 'Server';
+    var text = icon + ' *' + label + '* \u2014 ' + (event.displayNameEn || '') +
+      ' (' + (event.regionName || '') + ')' +
+      '\nTime: ' + (event.israelTime || '') + ' (Israel)' +
+      '\nSource: ' + source;
+    var payload = 'payload=' + encodeURIComponent(JSON.stringify({ text: text }));
+    var response = await fetch(SLACK_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: payload,
+    });
+    var result = await response.text();
+    return result === 'ok';
+  } catch (err) {
+    console.error('Slack error:', err.message);
+    return false;
+  }
+}
+
+async function sendGoogleSheet(event) {
+  try {
+    var response = await fetch(GOOGLE_SHEET_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: event.type,
+        regionName: event.regionName,
+        displayNameEn: event.displayNameEn,
+        timestamp: event.timestamp,
+        israelTime: event.israelTime,
+        source: event.source || 'Server',
+      }),
+    });
+    return response.ok;
+  } catch (err) {
+    console.error('Google Sheet error:', err.message);
+    return false;
+  }
+}
+
+// --- Static file serving ---
+
+app.use(express.static(ROOT, {
+  extensions: ['html'],
+  index: 'index.html',
+}));
 
 // --- Server-side alert polling & webhook ---
 
@@ -157,30 +239,19 @@ function fetchJson(targetUrl) {
   });
 }
 
+// Fire webhook: sends directly to Slack + Google Sheets (no intermediate hop)
 function fireWebhook(event) {
-  if (!WEBHOOK_URL) return;
-  var postData = JSON.stringify(event);
-  try {
-    var urlObj = new url.URL(WEBHOOK_URL);
-    var transport = WEBHOOK_URL.startsWith('https') ? https : http;
-    var options = {
-      hostname: urlObj.hostname,
-      port: urlObj.port || (WEBHOOK_URL.startsWith('https') ? 443 : 80),
-      path: urlObj.pathname + urlObj.search,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(postData)
-      }
-    };
-    var req = transport.request(options, function (res) { res.resume(); });
-    req.on('error', function (err) {
-      console.error('Webhook error:', err.message);
+  if (SLACK_WEBHOOK_URL) {
+    sendSlack(event).then(function (ok) {
+      if (ok) console.log('[SLACK] Sent:', event.type, event.displayNameEn);
+      else console.error('[SLACK] Failed for:', event.displayNameEn);
     });
-    req.write(postData);
-    req.end();
-  } catch (err) {
-    console.error('Webhook error:', err.message);
+  }
+  if (GOOGLE_SHEET_WEBHOOK_URL) {
+    sendGoogleSheet(event).then(function (ok) {
+      if (ok) console.log('[SHEETS] Sent:', event.type, event.displayNameEn);
+      else console.error('[SHEETS] Failed for:', event.displayNameEn);
+    });
   }
 }
 
@@ -262,7 +333,8 @@ function serverPoll() {
             regionName: region.name,
             displayNameEn: region.displayNameEn,
             timestamp: new Date().toISOString(),
-            israelTime: getIsraelTimeStr()
+            israelTime: getIsraelTimeStr(),
+            source: 'Server',
           });
         }
       } else if (!matched && prev) {
@@ -274,7 +346,8 @@ function serverPoll() {
             regionName: region.name,
             displayNameEn: region.displayNameEn,
             timestamp: new Date().toISOString(),
-            israelTime: getIsraelTimeStr()
+            israelTime: getIsraelTimeStr(),
+            source: 'Server',
           });
         }
       }
@@ -287,19 +360,24 @@ function serverPoll() {
 }
 
 function startServerPolling() {
-  if (!WEBHOOK_URL) return;
-  console.log('Webhook polling active — sending to:', WEBHOOK_URL);
+  if (!SLACK_WEBHOOK_URL && !GOOGLE_SHEET_WEBHOOK_URL) {
+    console.log('No webhook URLs configured — polling disabled');
+    return;
+  }
+  console.log('Webhook polling active — every', SERVER_POLL_MS / 1000, 'seconds');
+  if (SLACK_WEBHOOK_URL) console.log('  Slack: configured');
+  if (GOOGLE_SHEET_WEBHOOK_URL) console.log('  Google Sheets: configured');
   serverPoll();
-  console.log('Polling every', SERVER_POLL_MS / 1000, 'seconds');
   setInterval(serverPoll, SERVER_POLL_MS);
 }
 
-server.listen(PORT, function () {
+// --- Start server ---
+
+app.listen(PORT, function () {
   console.log('Oref Dashboard running at http://localhost:' + PORT);
   if (MOCK) {
-    console.log('\x1b[33m%s\x1b[0m', '⚠ MOCK MODE — serving fake alert data from mocks/');
-  } else {
-    console.log('Proxy: /api/alerts and /api/history');
+    console.log('\x1b[33m%s\x1b[0m', '\u26A0 MOCK MODE \u2014 serving fake alert data from mocks/');
   }
+  console.log('Endpoints: /api/alerts, /api/history, /proxy, /webhook, /slack-webhook');
   startServerPolling();
 });
