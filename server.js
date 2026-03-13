@@ -283,12 +283,14 @@ function serverPoll() {
       }
     }
 
-    // Build the set of active cities from history (within lookback window)
-    var historyCities = [];
+    // Build region-level active/ended times from history (within lookback window)
+    // Compare at REGION level, not city level, because OREF uses different
+    // sub-area names for active vs ended entries (e.g., "אזור תעשייה חבל מודיעין"
+    // gets an active alert but its ended event goes to "מודיעין מכבים רעות")
+    var regionActiveTime = {};
+    var regionEndedTime = {};
     if (Array.isArray(entries) && entries.length > 0) {
       var cutoff = Date.now() - CONFIG.HISTORY_LOOKBACK_MS;
-      var cityEndedTime = {};
-      var cityActiveTime = {};
 
       entries.forEach(function (e) {
         var parts = e.alertDate.split(' ');
@@ -302,24 +304,33 @@ function serverPoll() {
 
         var city = e.data;
         var isEnded = e.title && e.title.includes('\u05D4\u05E1\u05EA\u05D9\u05D9\u05DD');
-        if (isEnded) {
-          if (!cityEndedTime[city] || time > cityEndedTime[city]) cityEndedTime[city] = time;
-        } else {
-          if (!cityActiveTime[city] || time > cityActiveTime[city]) cityActiveTime[city] = time;
-        }
-      });
 
-      Object.keys(cityActiveTime).forEach(function (city) {
-        if (!cityEndedTime[city] || cityActiveTime[city] > cityEndedTime[city]) {
-          historyCities.push(city);
-        }
+        // Match this city against all regions and track times per region
+        CONFIG.REGIONS.forEach(function (region) {
+          var matches = region.matchPatterns.some(function (pattern) {
+            return city.includes(pattern);
+          });
+          if (!matches) return;
+
+          if (isEnded) {
+            if (!regionEndedTime[region.name] || time > regionEndedTime[region.name]) {
+              regionEndedTime[region.name] = time;
+            }
+          } else {
+            if (!regionActiveTime[region.name] || time > regionActiveTime[region.name]) {
+              regionActiveTime[region.name] = time;
+            }
+          }
+        });
       });
     }
 
-    // Merge: a region is active if matched by primary OR history, and not in ended list
+    // Merge: a region is active if matched by primary, or active in history
+    // with no later ended time, and not in primary ended list
     CONFIG.REGIONS.forEach(function (region) {
       var fromPrimary = isRegionMatchedServer(region, primaryCities);
-      var fromHistory = isRegionMatchedServer(region, historyCities);
+      var fromHistory = regionActiveTime[region.name] &&
+        (!regionEndedTime[region.name] || regionActiveTime[region.name] > regionEndedTime[region.name]);
       var fromEnded = isRegionMatchedServer(region, endedCities);
       var matched = (fromPrimary || fromHistory) && !fromEnded;
       var prev = serverRegionStates[region.name] || false;
