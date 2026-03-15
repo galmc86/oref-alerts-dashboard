@@ -442,6 +442,44 @@ function serverPoll() {
       });
     }
 
+    // On first poll, seed serverEvents from OREF history so the client
+    // event log shows recent alerts even after a server restart
+    if (isFirstServerPoll && serverEvents.length === 0) {
+      var historyEvents = [];
+      CONFIG.REGIONS.forEach(function (region) {
+        if (regionActiveTime[region.name]) {
+          var t = new Date(regionActiveTime[region.name]);
+          historyEvents.push({
+            type: 'alert_start',
+            regionName: region.name,
+            displayNameEn: region.displayNameEn,
+            timestamp: t.toISOString(),
+            israelTime: t.toLocaleTimeString('en-US', { hour12: false, timeZone: 'Asia/Jerusalem' }),
+            source: 'History',
+          });
+        }
+        if (regionEndedTime[region.name]) {
+          var t2 = new Date(regionEndedTime[region.name]);
+          historyEvents.push({
+            type: 'alert_end',
+            regionName: region.name,
+            displayNameEn: region.displayNameEn,
+            timestamp: t2.toISOString(),
+            israelTime: t2.toLocaleTimeString('en-US', { hour12: false, timeZone: 'Asia/Jerusalem' }),
+            source: 'History',
+          });
+        }
+      });
+      // Sort newest first and record
+      historyEvents.sort(function (a, b) {
+        return b.timestamp < a.timestamp ? -1 : b.timestamp > a.timestamp ? 1 : 0;
+      });
+      historyEvents.forEach(function (e) { recordEvent(e); });
+      if (historyEvents.length > 0) {
+        console.log('[EVENTS] Seeded', historyEvents.length, 'events from OREF history');
+      }
+    }
+
     // Merge: a region is active if matched by primary, or active in history
     // with no later ended time, and not in primary ended list
     CONFIG.REGIONS.forEach(function (region) {
