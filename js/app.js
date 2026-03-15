@@ -29,6 +29,7 @@
     renderSafePills();
     initEventLog();
     initNotifications();
+    fetchServerEvents(); // load server-detected events into log
     startPolling();
   }
 
@@ -92,6 +93,7 @@
         processHistoryFallback(history);
       }
       updateLastPollTime();
+      fetchServerEvents(); // sync server-detected events into log
       if (isFirstLoad) {
         hideLoading();
         isFirstLoad = false;
@@ -404,18 +406,6 @@
     if (event.type === 'alert_start') {
       sendNotification(event);
     }
-    fireSlackWebhook(event);
-  }
-
-  function fireSlackWebhook(event) {
-    if (!CONFIG.WEBHOOK_PROXY_URL) return;
-    try {
-      fetch(CONFIG.WEBHOOK_PROXY_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(event)
-      });
-    } catch (e) { /* silently ignore */ }
   }
 
   // --- Event Log ---
@@ -467,6 +457,58 @@
         '<span class="event-time">' + event.israelTime + '</span>';
       list.appendChild(item);
     });
+  }
+
+  // --- Server Events Sync ---
+
+  var lastServerEventTime = '';
+
+  function fetchServerEvents() {
+    var url = '/api/events';
+    if (lastServerEventTime) {
+      url += '?since=' + encodeURIComponent(lastServerEventTime);
+    }
+    fetch(url).then(function (res) {
+      return res.json();
+    }).then(function (events) {
+      if (!Array.isArray(events) || events.length === 0) return;
+      mergeServerEvents(events);
+    }).catch(function () { /* silently ignore */ });
+  }
+
+  function mergeServerEvents(events) {
+    // Build a set of existing event keys for dedup
+    var existingKeys = {};
+    eventLog.forEach(function (e) {
+      existingKeys[e.timestamp + '|' + e.regionName + '|' + e.type] = true;
+    });
+
+    var added = 0;
+    events.forEach(function (e) {
+      var key = e.timestamp + '|' + e.regionName + '|' + e.type;
+      if (!existingKeys[key]) {
+        eventLog.push(e);
+        existingKeys[key] = true;
+        added++;
+      }
+      // Track latest timestamp for ?since= on next fetch
+      if (!lastServerEventTime || e.timestamp > lastServerEventTime) {
+        lastServerEventTime = e.timestamp;
+      }
+    });
+
+    if (added > 0) {
+      // Sort by timestamp descending (newest first)
+      eventLog.sort(function (a, b) {
+        return b.timestamp < a.timestamp ? -1 : b.timestamp > a.timestamp ? 1 : 0;
+      });
+      // Cap at max
+      if (eventLog.length > CONFIG.EVENT_LOG_MAX) {
+        eventLog = eventLog.slice(0, CONFIG.EVENT_LOG_MAX);
+      }
+      persistEventLog();
+      renderEventLog();
+    }
   }
 
   // --- Browser Notifications ---

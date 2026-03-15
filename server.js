@@ -200,6 +200,20 @@ app.get('/health', function (req, res) {
   });
 });
 
+// --- Server event log endpoint ---
+
+app.get('/api/events', function (req, res) {
+  var since = req.query.since;
+  if (since) {
+    var sinceTime = new Date(since).getTime();
+    var filtered = serverEvents.filter(function (e) {
+      return new Date(e.timestamp).getTime() > sinceTime;
+    });
+    return res.json(filtered);
+  }
+  res.json(serverEvents);
+});
+
 // --- Slack / Google Sheets helpers ---
 
 async function sendSlack(event) {
@@ -260,6 +274,7 @@ app.get('/', function (req, res) { res.sendFile(path.join(ROOT, 'index.html')); 
 var serverRegionStates = {};
 var isFirstServerPoll = true;
 var isPolling = false; // guard against concurrent polls
+var serverEvents = []; // in-memory event log for client dashboard
 
 function getIsraelTimeStr() {
   return new Date().toLocaleTimeString('en-US', { hour12: false, timeZone: 'Asia/Jerusalem' });
@@ -271,6 +286,13 @@ function isRegionMatchedServer(region, cities) {
       return city.includes(pattern);
     });
   });
+}
+
+function recordEvent(event) {
+  serverEvents.unshift(event);
+  if (serverEvents.length > CONFIG.EVENT_LOG_MAX) {
+    serverEvents = serverEvents.slice(0, CONFIG.EVENT_LOG_MAX);
+  }
 }
 
 function fetchJson(targetUrl) {
@@ -433,27 +455,31 @@ function serverPoll() {
       if (matched && !prev) {
         serverRegionStates[region.name] = true;
         // Fire alert_start even on first poll — catch alerts active at server start
-        console.log('[WEBHOOK] Alert started:', region.displayNameEn);
-        fireWebhook({
+        var startEvent = {
           type: 'alert_start',
           regionName: region.name,
           displayNameEn: region.displayNameEn,
           timestamp: new Date().toISOString(),
           israelTime: getIsraelTimeStr(),
           source: 'Server',
-        });
+        };
+        console.log('[WEBHOOK] Alert started:', region.displayNameEn);
+        recordEvent(startEvent);
+        fireWebhook(startEvent);
       } else if (!matched && prev) {
         serverRegionStates[region.name] = false;
         if (!isFirstServerPoll) {
-          console.log('[WEBHOOK] Alert ended:', region.displayNameEn);
-          fireWebhook({
+          var endEvent = {
             type: 'alert_end',
             regionName: region.name,
             displayNameEn: region.displayNameEn,
             timestamp: new Date().toISOString(),
             israelTime: getIsraelTimeStr(),
             source: 'Server',
-          });
+          };
+          console.log('[WEBHOOK] Alert ended:', region.displayNameEn);
+          recordEvent(endEvent);
+          fireWebhook(endEvent);
         }
       }
     });
@@ -519,6 +545,6 @@ var server = app.listen(PORT, function () {
   if (MOCK) {
     console.log('\x1b[33m%s\x1b[0m', '\u26A0 MOCK MODE \u2014 serving fake alert data from mocks/');
   }
-  console.log('Endpoints: /api/alerts, /api/history, /proxy, /webhook, /health');
+  console.log('Endpoints: /api/alerts, /api/history, /api/events, /proxy, /webhook, /health');
   startServerPolling();
 });
