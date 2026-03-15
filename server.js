@@ -406,6 +406,8 @@ function serverPoll() {
     // gets an active alert but its ended event goes to "מודיעין מכבים רעות")
     var regionActiveTime = {};
     var regionEndedTime = {};
+    var regionActiveAlertDate = {}; // original Israel-time string from OREF
+    var regionEndedAlertDate = {};
     if (Array.isArray(entries) && entries.length > 0) {
       var cutoff = Date.now() - CONFIG.HISTORY_LOOKBACK_MS;
 
@@ -432,10 +434,12 @@ function serverPoll() {
           if (isEnded) {
             if (!regionEndedTime[region.name] || time > regionEndedTime[region.name]) {
               regionEndedTime[region.name] = time;
+              regionEndedAlertDate[region.name] = e.alertDate;
             }
           } else {
             if (!regionActiveTime[region.name] || time > regionActiveTime[region.name]) {
               regionActiveTime[region.name] = time;
+              regionActiveAlertDate[region.name] = e.alertDate;
             }
           }
         });
@@ -447,25 +451,25 @@ function serverPoll() {
     if (isFirstServerPoll && serverEvents.length === 0) {
       var historyEvents = [];
       CONFIG.REGIONS.forEach(function (region) {
-        if (regionActiveTime[region.name]) {
-          var t = new Date(regionActiveTime[region.name]);
+        if (regionActiveAlertDate[region.name]) {
+          var timeStr = regionActiveAlertDate[region.name].split(' ')[1] || '';
           historyEvents.push({
             type: 'alert_start',
             regionName: region.name,
             displayNameEn: region.displayNameEn,
-            timestamp: t.toISOString(),
-            israelTime: t.toLocaleTimeString('en-US', { hour12: false, timeZone: 'Asia/Jerusalem' }),
+            timestamp: regionActiveAlertDate[region.name],
+            israelTime: timeStr,
             source: 'History',
           });
         }
-        if (regionEndedTime[region.name]) {
-          var t2 = new Date(regionEndedTime[region.name]);
+        if (regionEndedAlertDate[region.name]) {
+          var timeStr2 = regionEndedAlertDate[region.name].split(' ')[1] || '';
           historyEvents.push({
             type: 'alert_end',
             regionName: region.name,
             displayNameEn: region.displayNameEn,
-            timestamp: t2.toISOString(),
-            israelTime: t2.toLocaleTimeString('en-US', { hour12: false, timeZone: 'Asia/Jerusalem' }),
+            timestamp: regionEndedAlertDate[region.name],
+            israelTime: timeStr2,
             source: 'History',
           });
         }
