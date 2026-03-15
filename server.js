@@ -481,18 +481,23 @@ function serverPoll() {
 
       if (matched && !prev) {
         serverRegionStates[region.name] = true;
-        // Fire alert_start even on first poll — catch alerts active at server start
-        var startEvent = {
-          type: 'alert_start',
-          regionName: region.name,
-          displayNameEn: region.displayNameEn,
-          timestamp: new Date().toISOString(),
-          israelTime: getIsraelTimeStr(),
-          source: 'Server',
-        };
-        console.log('[WEBHOOK] Alert started:', region.displayNameEn);
-        recordEvent(startEvent);
-        fireWebhook(startEvent);
+        if (!isFirstServerPoll) {
+          // Only fire webhooks after first poll — first poll seeds state only
+          // to avoid false alert_start notifications from stale history entries
+          var startEvent = {
+            type: 'alert_start',
+            regionName: region.name,
+            displayNameEn: region.displayNameEn,
+            timestamp: new Date().toISOString(),
+            israelTime: getIsraelTimeStr(),
+            source: 'Server',
+          };
+          console.log('[WEBHOOK] Alert started:', region.displayNameEn);
+          recordEvent(startEvent);
+          fireWebhook(startEvent);
+        } else {
+          console.log('[WEBHOOK] Skipping first-poll alert_start for:', region.displayNameEn);
+        }
       } else if (!matched && prev) {
         serverRegionStates[region.name] = false;
         if (!isFirstServerPoll) {
