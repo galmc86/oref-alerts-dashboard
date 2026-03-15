@@ -259,28 +259,10 @@
 
   // --- Matching ---
 
-  function isRegionMatched(region, cities) {
-    return cities.some(function (city) {
-      return region.matchPatterns.some(function (pattern) {
-        return city.includes(pattern);
-      });
-    });
-  }
+  var isRegionMatched = ClientLib.isRegionMatched;
 
   function findRegionAlertTime(region, activeCityDates) {
-    var cities = Object.keys(activeCityDates);
-    for (var i = 0; i < cities.length; i++) {
-      var city = cities[i];
-      var matches = region.matchPatterns.some(function (pattern) {
-        return city.includes(pattern);
-      });
-      if (matches) {
-        // Extract time portion from alertDate "YYYY-MM-DD HH:MM:SS"
-        var parts = activeCityDates[city].alertDate.split(' ');
-        return parts[1] || '';
-      }
-    }
-    return getIsraelTime();
+    return ClientLib.findRegionAlertTime(region, activeCityDates, getIsraelTime());
   }
 
   // --- State Management ---
@@ -374,31 +356,12 @@
 
   // --- Date Parsing ---
 
-  function parseAlertDate(dateStr) {
-    var parts = dateStr.split(' ');
-    var dateParts = parts[0].split('-');
-    var timeParts = parts[1].split(':');
-    return new Date(
-      parseInt(dateParts[0]),
-      parseInt(dateParts[1]) - 1,
-      parseInt(dateParts[2]),
-      parseInt(timeParts[0]),
-      parseInt(timeParts[1]),
-      parseInt(timeParts[2])
-    ).getTime();
-  }
+  var parseAlertDate = ClientLib.parseAlertDate;
 
   // --- Event System ---
 
   function createEvent(type, region) {
-    var now = new Date();
-    return {
-      type: type,
-      regionName: region.name,
-      displayNameEn: region.displayNameEn,
-      timestamp: now.toISOString(),
-      israelTime: getIsraelTime()
-    };
+    return ClientLib.createEvent(type, region, getIsraelTime);
   }
 
   function emitEvent(event) {
@@ -477,35 +440,11 @@
   }
 
   function mergeServerEvents(events) {
-    // Build a set of existing event keys for dedup
-    var existingKeys = {};
-    eventLog.forEach(function (e) {
-      existingKeys[e.timestamp + '|' + e.regionName + '|' + e.type] = true;
-    });
-
-    var added = 0;
-    events.forEach(function (e) {
-      var key = e.timestamp + '|' + e.regionName + '|' + e.type;
-      if (!existingKeys[key]) {
-        eventLog.push(e);
-        existingKeys[key] = true;
-        added++;
-      }
-      // Track latest timestamp for ?since= on next fetch
-      if (!lastServerEventTime || e.timestamp > lastServerEventTime) {
-        lastServerEventTime = e.timestamp;
-      }
-    });
-
-    if (added > 0) {
-      // Sort by timestamp descending (newest first)
-      eventLog.sort(function (a, b) {
-        return b.timestamp < a.timestamp ? -1 : b.timestamp > a.timestamp ? 1 : 0;
-      });
-      // Cap at max
-      if (eventLog.length > CONFIG.EVENT_LOG_MAX) {
-        eventLog = eventLog.slice(0, CONFIG.EVENT_LOG_MAX);
-      }
+    var result = ClientLib.mergeServerEvents(events, eventLog, CONFIG.EVENT_LOG_MAX);
+    if (result.latestTimestamp) {
+      lastServerEventTime = result.latestTimestamp;
+    }
+    if (result.added > 0) {
       persistEventLog();
       renderEventLog();
     }

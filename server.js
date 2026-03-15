@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 
 const CONFIG = require('./js/config.js');
+const serverUtils = require('./lib/server-utils.js');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -36,11 +37,7 @@ app.use(express.json());
 
 // --- Mock helpers ---
 
-function getIsraelDateStr(offsetMinutes) {
-  var d = new Date(Date.now() - offsetMinutes * 60000);
-  var iso = d.toLocaleString('sv-SE', { timeZone: 'Asia/Jerusalem' });
-  return iso.replace('T', ' ');
-}
+var getIsraelDateStr = serverUtils.getIsraelDateStr;
 
 function serveMockAlerts(req, res) {
   var mockFile = process.argv.includes('--history-only') ? 'alerts-empty.json' : 'alerts.json';
@@ -276,23 +273,11 @@ var isFirstServerPoll = true;
 var isPolling = false; // guard against concurrent polls
 var serverEvents = []; // in-memory event log for client dashboard
 
-function getIsraelTimeStr() {
-  return new Date().toLocaleTimeString('en-US', { hour12: false, timeZone: 'Asia/Jerusalem' });
-}
-
-function isRegionMatchedServer(region, cities) {
-  return cities.some(function (city) {
-    return region.matchPatterns.some(function (pattern) {
-      return city.includes(pattern);
-    });
-  });
-}
+var getIsraelTimeStr = serverUtils.getIsraelTimeStr;
+var isRegionMatchedServer = serverUtils.isRegionMatchedServer;
 
 function recordEvent(event) {
-  serverEvents.unshift(event);
-  if (serverEvents.length > CONFIG.EVENT_LOG_MAX) {
-    serverEvents = serverEvents.slice(0, CONFIG.EVENT_LOG_MAX);
-  }
+  serverUtils.recordEvent(event, serverEvents, CONFIG.EVENT_LOG_MAX);
 }
 
 function fetchJson(targetUrl) {
@@ -582,11 +567,15 @@ process.on('SIGINT', function () { gracefulShutdown('SIGINT'); });
 
 // --- Start server ---
 
-var server = app.listen(PORT, function () {
-  console.log('Oref Dashboard running at http://localhost:' + PORT);
-  if (MOCK) {
-    console.log('\x1b[33m%s\x1b[0m', '\u26A0 MOCK MODE \u2014 serving fake alert data from mocks/');
-  }
-  console.log('Endpoints: /api/alerts, /api/history, /api/events, /proxy, /webhook, /health');
-  startServerPolling();
-});
+if (require.main === module) {
+  var server = app.listen(PORT, function () {
+    console.log('Oref Dashboard running at http://localhost:' + PORT);
+    if (MOCK) {
+      console.log('\x1b[33m%s\x1b[0m', '\u26A0 MOCK MODE \u2014 serving fake alert data from mocks/');
+    }
+    console.log('Endpoints: /api/alerts, /api/history, /api/events, /proxy, /webhook, /health');
+    startServerPolling();
+  });
+}
+
+module.exports = { app: app, serverRegionStates: serverRegionStates, serverEvents: serverEvents };
