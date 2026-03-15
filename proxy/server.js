@@ -9,6 +9,7 @@ const OREF_HEADERS = {
 };
 
 app.use(cors());
+app.use(express.json());
 
 app.get('/alerts', async (req, res) => {
   try {
@@ -37,6 +38,35 @@ app.get('/history', async (req, res) => {
   } catch (err) {
     console.error('history fetch error:', err.message);
     res.status(502).json({ error: 'Failed to fetch history' });
+  }
+});
+
+// Slack webhook relay — URL stored in Azure env var, never exposed to client
+const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL || '';
+
+app.post('/slack-webhook', async (req, res) => {
+  if (!SLACK_WEBHOOK_URL) {
+    return res.status(503).json({ error: 'Webhook not configured' });
+  }
+  try {
+    var event = req.body;
+    var icon = event.type === 'alert_start' ? ':rotating_light:' : ':white_check_mark:';
+    var label = event.type === 'alert_start' ? 'Alert Started' : 'Alert Ended';
+    var text = icon + ' *' + label + '* \u2014 ' + (event.displayNameEn || '') +
+      ' (' + (event.regionName || '') + ')' +
+      '\nTime: ' + (event.israelTime || '') + ' (Israel)' +
+      '\nSource: Dashboard';
+    var payload = 'payload=' + encodeURIComponent(JSON.stringify({ text: text }));
+    var response = await fetch(SLACK_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: payload
+    });
+    var result = await response.text();
+    res.json({ ok: result === 'ok' });
+  } catch (err) {
+    console.error('Slack webhook error:', err.message);
+    res.status(502).json({ error: 'Failed to send webhook' });
   }
 });
 
