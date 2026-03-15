@@ -13,7 +13,7 @@ const CONFIG = require('../js/config.js');
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
 const STATE_FILE = process.env.STATE_FILE || '/tmp/alert-state.json';
 
-const AZURE_PROXY = 'https://proxyserver-bgdcbvbaebbfczer.israelcentral-01.azurewebsites.net/proxy';
+const AZURE_PROXY = 'https://delco-regions-alert-dashboard.10bis.co.il/proxy';
 
 function fetchJson(targetUrl) {
   return new Promise(function (resolve, reject) {
