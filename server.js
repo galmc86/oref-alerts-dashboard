@@ -491,9 +491,14 @@ function processPendingAlertEnds() {
     if (now >= pending.sendAfter) {
       delete pendingAlertEnds[region];
       changed = true;
-      sendSlack(pending.event).then(function (ok) {
-        if (ok) console.log('[SLACK] Sent (delayed):', pending.event.type, pending.event.displayNameEn);
-        else console.error('[SLACK] Failed (delayed) for:', pending.event.displayNameEn);
+      // Update time to reflect when the message is actually sent, not when alert ended
+      var sendEvent = Object.assign({}, pending.event, {
+        israelTime: getIsraelTimeStr(),
+        timestamp: new Date().toISOString()
+      });
+      sendSlack(sendEvent).then(function (ok) {
+        if (ok) console.log('[SLACK] Sent (delayed):', sendEvent.type, sendEvent.displayNameEn);
+        else console.error('[SLACK] Failed (delayed) for:', sendEvent.displayNameEn);
       });
     }
   });
