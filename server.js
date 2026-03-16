@@ -217,9 +217,9 @@ app.get('/api/events', function (req, res) {
 // --- Slack / Google Sheets helpers ---
 
 // Dedup guard — prevent duplicate Slack messages when Azure runs multiple
-// instances during deploys/restarts. Uses a shared file lock.
-// DEDUP_FILE is set after DATA_DIR is defined (see below)
-var DEDUP_FILE;
+// instances during deploys/restarts. Uses a shared file on /home/data.
+// DEDUP_FILE_PATH is set after DATA_DIR is defined (line ~324)
+var DEDUP_FILE_PATH;
 var DEDUP_WINDOW_MS = 60 * 1000; // 60 seconds — cross-instance dedup only
 
 function isDuplicateSlack(event) {
@@ -227,8 +227,8 @@ function isDuplicateSlack(event) {
   var now = Date.now();
   var dedup = {};
   try {
-    if (fs.existsSync(DEDUP_FILE)) {
-      dedup = JSON.parse(fs.readFileSync(DEDUP_FILE, 'utf8'));
+    if (DEDUP_FILE_PATH && fs.existsSync(DEDUP_FILE_PATH)) {
+      dedup = JSON.parse(fs.readFileSync(DEDUP_FILE_PATH, 'utf8'));
     }
   } catch (e) { dedup = {}; }
 
@@ -243,7 +243,7 @@ function isDuplicateSlack(event) {
 
   dedup[key] = now;
   try {
-    fs.writeFileSync(DEDUP_FILE, JSON.stringify(dedup), 'utf8');
+    fs.writeFileSync(DEDUP_FILE_PATH, JSON.stringify(dedup), 'utf8');
   } catch (e) { /* best effort */ }
   return false;
 }
@@ -321,8 +321,8 @@ try { if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
 var EVENTS_FILE = path.join(DATA_DIR, '.server-events.json');
 var REGION_STATES_FILE = path.join(DATA_DIR, '.server-region-states.json');
-DEDUP_FILE = path.join(DATA_DIR, '.slack-dedup.json');
-PENDING_ENDS_FILE = path.join(DATA_DIR, '.pending-alert-ends.json');
+var DEDUP_FILE_PATH = path.join(DATA_DIR, '.slack-dedup.json');
+var PENDING_ENDS_FILE = path.join(DATA_DIR, '.pending-alert-ends.json');
 
 var getIsraelTimeStr = serverUtils.getIsraelTimeStr;
 var isRegionMatchedServer = serverUtils.isRegionMatchedServer;
@@ -691,8 +691,7 @@ function startServerPolling() {
 // On SIGTERM (Azure restart/deploy), persist pending alert_end times to disk
 // so they survive restarts and the 15-minute delay is honoured.
 
-// PENDING_ENDS_FILE is set after DATA_DIR is defined (see below)
-var PENDING_ENDS_FILE;
+// PENDING_ENDS_FILE is defined at line 325 after DATA_DIR
 
 function savePendingEnds() {
   try {
