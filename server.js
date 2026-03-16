@@ -220,7 +220,7 @@ app.get('/api/events', function (req, res) {
 // instances during deploys/restarts. Uses a shared file lock.
 // DEDUP_FILE is set after DATA_DIR is defined (see below)
 var DEDUP_FILE;
-var DEDUP_WINDOW_MS = 30 * 60 * 1000; // 30 minutes — prevent re-alerting on OREF data flicker
+var DEDUP_WINDOW_MS = 60 * 1000; // 60 seconds — cross-instance dedup only
 
 function isDuplicateSlack(event) {
   var key = event.type + '|' + event.regionName;
@@ -373,6 +373,12 @@ function saveRegionStates() {
     console.error('[STATES] Failed to save to disk:', e.message);
   }
 }
+
+// Flicker guard — require 3 consecutive "not matched" polls before
+// transitioning a region from active→ended. Prevents OREF data
+// flicker from causing false alert_end → alert_start cycles.
+var FLICKER_THRESHOLD = 3;
+var regionNotMatchedCount = {}; // { regionName: consecutiveNotMatchedPolls }
 
 function recordEvent(event) {
   serverUtils.recordEvent(event, serverEvents, CONFIG.EVENT_LOG_MAX);
@@ -604,44 +610,58 @@ function serverPoll() {
       var matched = (fromPrimary || fromHistory) && !fromEnded;
       var prev = serverRegionStates[region.name] || false;
 
-      if (matched && !prev) {
-        serverRegionStates[region.name] = true;
-        saveRegionStates();
-        if (!isFirstServerPoll) {
-          // Log transition details for debugging OREF flicker
-          console.log('[STATE] ' + region.displayNameEn + ': false→true',
-            '(primary=' + fromPrimary + ', history=' + fromHistory + ', ended=' + fromEnded + ')');
-          var startEvent = {
-            type: 'alert_start',
-            regionName: region.name,
-            displayNameEn: region.displayNameEn,
-            timestamp: new Date().toISOString(),
-            israelTime: getIsraelTimeStr(),
-            source: 'Server',
-          };
-          console.log('[WEBHOOK] Alert started:', region.displayNameEn);
-          recordEvent(startEvent);
-          fireWebhook(startEvent);
-        } else {
-          console.log('[WEBHOOK] Skipping first-poll alert_start for:', region.displayNameEn);
+      if (matched) {
+        // Region is active — reset flicker counter
+        regionNotMatchedCount[region.name] = 0;
+
+        if (!prev) {
+          serverRegionStates[region.name] = true;
+          saveRegionStates();
+          if (!isFirstServerPoll) {
+            console.log('[STATE] ' + region.displayNameEn + ': false→true',
+              '(primary=' + fromPrimary + ', history=' + fromHistory + ', ended=' + fromEnded + ')');
+            var startEvent = {
+              type: 'alert_start',
+              regionName: region.name,
+              displayNameEn: region.displayNameEn,
+              timestamp: new Date().toISOString(),
+              israelTime: getIsraelTimeStr(),
+              source: 'Server',
+            };
+            console.log('[WEBHOOK] Alert started:', region.displayNameEn);
+            recordEvent(startEvent);
+            fireWebhook(startEvent);
+          } else {
+            console.log('[WEBHOOK] Skipping first-poll alert_start for:', region.displayNameEn);
+          }
         }
-      } else if (!matched && prev) {
-        serverRegionStates[region.name] = false;
-        saveRegionStates();
-        if (!isFirstServerPoll) {
-          console.log('[STATE] ' + region.displayNameEn + ': true→false',
-            '(primary=' + fromPrimary + ', history=' + fromHistory + ', ended=' + fromEnded + ')');
-          var endEvent = {
-            type: 'alert_end',
-            regionName: region.name,
-            displayNameEn: region.displayNameEn,
-            timestamp: new Date().toISOString(),
-            israelTime: getIsraelTimeStr(),
-            source: 'Server',
-          };
-          console.log('[WEBHOOK] Alert ended:', region.displayNameEn);
-          recordEvent(endEvent);
-          fireWebhook(endEvent);
+      } else if (prev) {
+        // Region was active but not matched this poll — increment flicker counter
+        var count = (regionNotMatchedCount[region.name] || 0) + 1;
+        regionNotMatchedCount[region.name] = count;
+
+        if (count >= FLICKER_THRESHOLD) {
+          // Confirmed ended — 3 consecutive polls without match
+          serverRegionStates[region.name] = false;
+          saveRegionStates();
+          regionNotMatchedCount[region.name] = 0;
+          if (!isFirstServerPoll) {
+            console.log('[STATE] ' + region.displayNameEn + ': true→false (after ' + count + ' polls)',
+              '(primary=' + fromPrimary + ', history=' + fromHistory + ', ended=' + fromEnded + ')');
+            var endEvent = {
+              type: 'alert_end',
+              regionName: region.name,
+              displayNameEn: region.displayNameEn,
+              timestamp: new Date().toISOString(),
+              israelTime: getIsraelTimeStr(),
+              source: 'Server',
+            };
+            console.log('[WEBHOOK] Alert ended:', region.displayNameEn);
+            recordEvent(endEvent);
+            fireWebhook(endEvent);
+          }
+        } else {
+          console.log('[FLICKER] ' + region.displayNameEn + ': not matched poll ' + count + '/' + FLICKER_THRESHOLD + ', holding state');
         }
       }
     });
