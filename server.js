@@ -220,7 +220,7 @@ app.get('/api/events', function (req, res) {
 // instances during deploys/restarts. Uses a shared file lock.
 // DEDUP_FILE is set after DATA_DIR is defined (see below)
 var DEDUP_FILE;
-var DEDUP_WINDOW_MS = 60 * 1000; // 60 seconds
+var DEDUP_WINDOW_MS = 30 * 60 * 1000; // 30 minutes — prevent re-alerting on OREF data flicker
 
 function isDuplicateSlack(event) {
   var key = event.type + '|' + event.regionName;
@@ -608,8 +608,9 @@ function serverPoll() {
         serverRegionStates[region.name] = true;
         saveRegionStates();
         if (!isFirstServerPoll) {
-          // Only fire webhooks after first poll — first poll seeds state only
-          // to avoid false alert_start notifications from stale history entries
+          // Log transition details for debugging OREF flicker
+          console.log('[STATE] ' + region.displayNameEn + ': false→true',
+            '(primary=' + fromPrimary + ', history=' + fromHistory + ', ended=' + fromEnded + ')');
           var startEvent = {
             type: 'alert_start',
             regionName: region.name,
@@ -628,6 +629,8 @@ function serverPoll() {
         serverRegionStates[region.name] = false;
         saveRegionStates();
         if (!isFirstServerPoll) {
+          console.log('[STATE] ' + region.displayNameEn + ': true→false',
+            '(primary=' + fromPrimary + ', history=' + fromHistory + ', ended=' + fromEnded + ')');
           var endEvent = {
             type: 'alert_end',
             regionName: region.name,
