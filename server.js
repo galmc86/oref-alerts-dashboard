@@ -15,11 +15,10 @@ const MOCK = process.argv.includes('--mock');
 const SERVER_POLL_MS = 5000;
 const ALERT_END_SLACK_DELAY_MS = parseInt(process.env.ALERT_END_DELAY_MINUTES || '15', 10) * 60 * 1000;
 
-// Track pending alert_end per region — persist scheduled send time so the
-// 15-minute delay survives Azure restarts / SIGTERM recycling.
+// Pending alert_end Slack messages — written to disk on every mutation.
+// The poll loop checks these every 5 seconds and sends when sendAfter has elapsed.
 // { regionName: { event: {...}, sendAfter: <epoch ms> } }
 var pendingAlertEnds = {};
-var pendingAlertEndTimers = {}; // in-memory timers (convenience, not relied upon)
 
 // Webhook secrets from environment variables
 const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL || '';
@@ -427,13 +426,10 @@ function fireWebhook(event) {
   if (SLACK_WEBHOOK_URL) {
     if (event.type === 'alert_start') {
       // Cancel any pending "ended" notification for this region
-      if (pendingAlertEndTimers[region]) {
-        clearTimeout(pendingAlertEndTimers[region]);
-        delete pendingAlertEndTimers[region];
-      }
       if (pendingAlertEnds[region]) {
         console.log('[SLACK] Cancelled pending alert_end for:', event.displayNameEn);
         delete pendingAlertEnds[region];
+        savePendingAlertEnds();
       }
       sendSlack(event).then(function (ok) {
         if (ok) console.log('[SLACK] Sent:', event.type, event.displayNameEn);
@@ -442,9 +438,9 @@ function fireWebhook(event) {
     } else if (event.type === 'alert_end') {
       var sendAfter = Date.now() + ALERT_END_SLACK_DELAY_MS;
       pendingAlertEnds[region] = { event: event, sendAfter: sendAfter };
+      savePendingAlertEnds();
       console.log('[SLACK] Scheduling alert_end in 15 min for:', event.displayNameEn,
         '(send after', new Date(sendAfter).toISOString() + ')');
-      scheduleAlertEndTimer(region);
     }
   }
 
@@ -456,29 +452,53 @@ function fireWebhook(event) {
   }
 }
 
-// Schedule (or re-schedule after restart) an in-memory timer for a pending alert_end.
-// If the delay has already elapsed, send immediately.
-function scheduleAlertEndTimer(region) {
-  var pending = pendingAlertEnds[region];
-  if (!pending) return;
-  var remaining = pending.sendAfter - Date.now();
-  if (remaining <= 0) {
-    // Delay already elapsed (e.g. server restarted after the 15 min passed)
-    delete pendingAlertEnds[region];
-    delete pendingAlertEndTimers[region];
-    sendSlack(pending.event).then(function (ok) {
-      if (ok) console.log('[SLACK] Sent (delayed, post-restart):', pending.event.displayNameEn);
-      else console.error('[SLACK] Failed (delayed, post-restart):', pending.event.displayNameEn);
-    });
-  } else {
-    pendingAlertEndTimers[region] = setTimeout(function () {
+// --- Poll-based pending alert_end system ---
+// No setTimeout — the poll loop checks every 5 seconds.
+// File is always up to date on disk (written on every mutation).
+
+function savePendingAlertEnds() {
+  try {
+    fs.writeFileSync(PENDING_ENDS_FILE, JSON.stringify(pendingAlertEnds), 'utf8');
+  } catch (e) {
+    console.error('[PENDING] Failed to save:', e.message);
+  }
+}
+
+function loadPendingAlertEnds() {
+  try {
+    if (fs.existsSync(PENDING_ENDS_FILE)) {
+      pendingAlertEnds = JSON.parse(fs.readFileSync(PENDING_ENDS_FILE, 'utf8'));
+    }
+  } catch (e) {
+    console.error('[PENDING] Failed to load:', e.message);
+  }
+}
+
+function processPendingAlertEnds() {
+  loadPendingAlertEnds();
+  var regions = Object.keys(pendingAlertEnds);
+  if (regions.length === 0) return;
+
+  var now = Date.now();
+  var changed = false;
+  regions.forEach(function (region) {
+    var pending = pendingAlertEnds[region];
+    if (!pending || !pending.sendAfter) {
       delete pendingAlertEnds[region];
-      delete pendingAlertEndTimers[region];
+      changed = true;
+      return;
+    }
+    if (now >= pending.sendAfter) {
+      delete pendingAlertEnds[region];
+      changed = true;
       sendSlack(pending.event).then(function (ok) {
         if (ok) console.log('[SLACK] Sent (delayed):', pending.event.type, pending.event.displayNameEn);
         else console.error('[SLACK] Failed (delayed) for:', pending.event.displayNameEn);
       });
-    }, remaining);
+    }
+  });
+  if (changed) {
+    savePendingAlertEnds();
   }
 }
 
@@ -667,6 +687,7 @@ function serverPoll() {
     });
   }).then(function () {
     isFirstServerPoll = false;
+    processPendingAlertEnds();
   }).catch(function (err) {
     console.error('Server poll error:', err.message);
   }).finally(function () {
@@ -688,53 +709,11 @@ function startServerPolling() {
 }
 
 // --- Graceful shutdown ---
-// On SIGTERM (Azure restart/deploy), persist pending alert_end times to disk
-// so they survive restarts and the 15-minute delay is honoured.
-
-// PENDING_ENDS_FILE is defined at line 325 after DATA_DIR
-
-function savePendingEnds() {
-  try {
-    var data = JSON.stringify(pendingAlertEnds);
-    fs.writeFileSync(PENDING_ENDS_FILE, data, 'utf8');
-    console.log('[SHUTDOWN] Saved', Object.keys(pendingAlertEnds).length, 'pending alert_end(s) to disk');
-  } catch (e) {
-    console.error('[SHUTDOWN] Failed to save pending ends:', e.message);
-  }
-}
-
-function loadPendingEnds() {
-  try {
-    if (fs.existsSync(PENDING_ENDS_FILE)) {
-      var data = JSON.parse(fs.readFileSync(PENDING_ENDS_FILE, 'utf8'));
-      var count = 0;
-      Object.keys(data).forEach(function (region) {
-        pendingAlertEnds[region] = data[region];
-        scheduleAlertEndTimer(region);
-        count++;
-      });
-      // Clean up the file after loading
-      fs.unlinkSync(PENDING_ENDS_FILE);
-      if (count > 0) {
-        console.log('[STARTUP] Restored', count, 'pending alert_end(s) from disk');
-      }
-    }
-  } catch (e) {
-    console.error('[STARTUP] Failed to load pending ends:', e.message);
-  }
-}
+// Pending alert_ends are already on disk (written on every mutation).
+// No special save needed — just exit cleanly.
 
 function gracefulShutdown(signal) {
-  console.log(signal + ' received — saving pending notifications...');
-  // Cancel in-memory timers
-  var regions = Object.keys(pendingAlertEndTimers);
-  regions.forEach(function (region) {
-    clearTimeout(pendingAlertEndTimers[region]);
-    delete pendingAlertEndTimers[region];
-  });
-  // Persist pending ends to disk so they survive restart
-  savePendingEnds();
-  // Exit quickly — no more Slack calls on shutdown
+  console.log(signal + ' received — shutting down');
   setTimeout(function () {
     process.exit(0);
   }, 500);
@@ -754,7 +733,6 @@ if (require.main === module) {
     console.log('Endpoints: /api/alerts, /api/history, /api/events, /proxy, /webhook, /health');
     loadServerEvents();
     loadRegionStates();
-    loadPendingEnds();
     startServerPolling();
   });
 }
