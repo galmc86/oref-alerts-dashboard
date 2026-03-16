@@ -207,7 +207,7 @@ app.get('/api/events', function (req, res) {
   if (since) {
     var sinceTime = new Date(since).getTime();
     var filtered = serverEvents.filter(function (e) {
-      return new Date(e.timestamp).getTime() > sinceTime;
+      return new Date(e.timestamp).getTime() >= sinceTime;
     });
     return res.json(filtered);
   }
