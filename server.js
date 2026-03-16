@@ -216,8 +216,45 @@ app.get('/api/events', function (req, res) {
 
 // --- Slack / Google Sheets helpers ---
 
+// Dedup guard — prevent duplicate Slack messages when Azure runs multiple
+// instances during deploys/restarts. Uses a shared file lock.
+var DEDUP_FILE = path.join(__dirname, '.slack-dedup.json');
+var DEDUP_WINDOW_MS = 60 * 1000; // 60 seconds
+
+function isDuplicateSlack(event) {
+  var key = event.type + '|' + event.regionName;
+  var now = Date.now();
+  var dedup = {};
+  try {
+    if (fs.existsSync(DEDUP_FILE)) {
+      dedup = JSON.parse(fs.readFileSync(DEDUP_FILE, 'utf8'));
+    }
+  } catch (e) { dedup = {}; }
+
+  // Clean old entries
+  Object.keys(dedup).forEach(function (k) {
+    if (now - dedup[k] > DEDUP_WINDOW_MS) delete dedup[k];
+  });
+
+  if (dedup[key] && now - dedup[key] < DEDUP_WINDOW_MS) {
+    return true; // duplicate
+  }
+
+  dedup[key] = now;
+  try {
+    fs.writeFileSync(DEDUP_FILE, JSON.stringify(dedup), 'utf8');
+  } catch (e) { /* best effort */ }
+  return false;
+}
+
 async function sendSlack(event) {
   try {
+    // Skip if another instance already sent this message recently
+    if (isDuplicateSlack(event)) {
+      console.log('[SLACK] Dedup skip:', event.type, event.displayNameEn);
+      return true; // pretend success so caller doesn't retry
+    }
+
     var icon = event.type === 'alert_start' ? ':rotating_light:' : ':white_check_mark:';
     var label = event.type === 'alert_start' ? 'Alert Started' : 'Alert Ended';
     var source = event.source || 'Server';
