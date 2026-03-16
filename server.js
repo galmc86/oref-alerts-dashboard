@@ -13,7 +13,7 @@ const PORT = process.env.PORT || 8080;
 const ROOT = __dirname;
 const MOCK = process.argv.includes('--mock');
 const SERVER_POLL_MS = 5000;
-const ALERT_END_SLACK_DELAY_MS = 15 * 60 * 1000; // 15 minutes
+const ALERT_END_SLACK_DELAY_MS = parseInt(process.env.ALERT_END_DELAY_MINUTES || '15', 10) * 60 * 1000;
 
 // Track pending alert_end per region — persist scheduled send time so the
 // 15-minute delay survives Azure restarts / SIGTERM recycling.
