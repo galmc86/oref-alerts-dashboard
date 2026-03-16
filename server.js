@@ -15,8 +15,11 @@ const MOCK = process.argv.includes('--mock');
 const SERVER_POLL_MS = 5000;
 const ALERT_END_SLACK_DELAY_MS = 15 * 60 * 1000; // 15 minutes
 
-// Track pending alert_end Slack timers per region (cancel if alert restarts)
-var pendingAlertEndTimers = {};
+// Track pending alert_end per region — persist scheduled send time so the
+// 15-minute delay survives Azure restarts / SIGTERM recycling.
+// { regionName: { event: {...}, sendAfter: <epoch ms> } }
+var pendingAlertEnds = {};
+var pendingAlertEndTimers = {}; // in-memory timers (convenience, not relied upon)
 
 // Webhook secrets from environment variables
 const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL || '';
@@ -325,21 +328,21 @@ function fireWebhook(event) {
       if (pendingAlertEndTimers[region]) {
         clearTimeout(pendingAlertEndTimers[region]);
         delete pendingAlertEndTimers[region];
+      }
+      if (pendingAlertEnds[region]) {
         console.log('[SLACK] Cancelled pending alert_end for:', event.displayNameEn);
+        delete pendingAlertEnds[region];
       }
       sendSlack(event).then(function (ok) {
         if (ok) console.log('[SLACK] Sent:', event.type, event.displayNameEn);
         else console.error('[SLACK] Failed for:', event.displayNameEn);
       });
     } else if (event.type === 'alert_end') {
-      console.log('[SLACK] Scheduling alert_end in 15 min for:', event.displayNameEn);
-      pendingAlertEndTimers[region] = setTimeout(function () {
-        delete pendingAlertEndTimers[region];
-        sendSlack(event).then(function (ok) {
-          if (ok) console.log('[SLACK] Sent (delayed):', event.type, event.displayNameEn);
-          else console.error('[SLACK] Failed (delayed) for:', event.displayNameEn);
-        });
-      }, ALERT_END_SLACK_DELAY_MS);
+      var sendAfter = Date.now() + ALERT_END_SLACK_DELAY_MS;
+      pendingAlertEnds[region] = { event: event, sendAfter: sendAfter };
+      console.log('[SLACK] Scheduling alert_end in 15 min for:', event.displayNameEn,
+        '(send after', new Date(sendAfter).toISOString() + ')');
+      scheduleAlertEndTimer(region);
     }
   }
 
@@ -348,6 +351,32 @@ function fireWebhook(event) {
       if (ok) console.log('[SHEETS] Sent:', event.type, event.displayNameEn);
       else console.error('[SHEETS] Failed for:', event.displayNameEn);
     });
+  }
+}
+
+// Schedule (or re-schedule after restart) an in-memory timer for a pending alert_end.
+// If the delay has already elapsed, send immediately.
+function scheduleAlertEndTimer(region) {
+  var pending = pendingAlertEnds[region];
+  if (!pending) return;
+  var remaining = pending.sendAfter - Date.now();
+  if (remaining <= 0) {
+    // Delay already elapsed (e.g. server restarted after the 15 min passed)
+    delete pendingAlertEnds[region];
+    delete pendingAlertEndTimers[region];
+    sendSlack(pending.event).then(function (ok) {
+      if (ok) console.log('[SLACK] Sent (delayed, post-restart):', pending.event.displayNameEn);
+      else console.error('[SLACK] Failed (delayed, post-restart):', pending.event.displayNameEn);
+    });
+  } else {
+    pendingAlertEndTimers[region] = setTimeout(function () {
+      delete pendingAlertEnds[region];
+      delete pendingAlertEndTimers[region];
+      sendSlack(pending.event).then(function (ok) {
+        if (ok) console.log('[SLACK] Sent (delayed):', pending.event.type, pending.event.displayNameEn);
+        else console.error('[SLACK] Failed (delayed) for:', pending.event.displayNameEn);
+      });
+    }, remaining);
   }
 }
 
@@ -538,33 +567,56 @@ function startServerPolling() {
 }
 
 // --- Graceful shutdown ---
-// On SIGTERM (Azure restart/deploy), flush pending alert_end notifications immediately
+// On SIGTERM (Azure restart/deploy), persist pending alert_end times to disk
+// so they survive restarts and the 15-minute delay is honoured.
+
+var PENDING_ENDS_FILE = path.join(__dirname, '.pending-alert-ends.json');
+
+function savePendingEnds() {
+  try {
+    var data = JSON.stringify(pendingAlertEnds);
+    fs.writeFileSync(PENDING_ENDS_FILE, data, 'utf8');
+    console.log('[SHUTDOWN] Saved', Object.keys(pendingAlertEnds).length, 'pending alert_end(s) to disk');
+  } catch (e) {
+    console.error('[SHUTDOWN] Failed to save pending ends:', e.message);
+  }
+}
+
+function loadPendingEnds() {
+  try {
+    if (fs.existsSync(PENDING_ENDS_FILE)) {
+      var data = JSON.parse(fs.readFileSync(PENDING_ENDS_FILE, 'utf8'));
+      var count = 0;
+      Object.keys(data).forEach(function (region) {
+        pendingAlertEnds[region] = data[region];
+        scheduleAlertEndTimer(region);
+        count++;
+      });
+      // Clean up the file after loading
+      fs.unlinkSync(PENDING_ENDS_FILE);
+      if (count > 0) {
+        console.log('[STARTUP] Restored', count, 'pending alert_end(s) from disk');
+      }
+    }
+  } catch (e) {
+    console.error('[STARTUP] Failed to load pending ends:', e.message);
+  }
+}
 
 function gracefulShutdown(signal) {
-  console.log(signal + ' received — flushing pending notifications...');
+  console.log(signal + ' received — saving pending notifications...');
+  // Cancel in-memory timers
   var regions = Object.keys(pendingAlertEndTimers);
   regions.forEach(function (region) {
     clearTimeout(pendingAlertEndTimers[region]);
     delete pendingAlertEndTimers[region];
-    // Send the alert_end immediately rather than losing it
-    var regionConfig = CONFIG.REGIONS.find(function (r) { return r.name === region; });
-    if (regionConfig) {
-      sendSlack({
-        type: 'alert_end',
-        regionName: region,
-        displayNameEn: regionConfig.displayNameEn,
-        timestamp: new Date().toISOString(),
-        israelTime: getIsraelTimeStr(),
-        source: 'Server (shutdown)',
-      }).then(function () {
-        console.log('[SLACK] Flushed alert_end for:', regionConfig.displayNameEn);
-      });
-    }
   });
-  // Give Slack calls a moment to complete, then exit
+  // Persist pending ends to disk so they survive restart
+  savePendingEnds();
+  // Exit quickly — no more Slack calls on shutdown
   setTimeout(function () {
     process.exit(0);
-  }, regions.length > 0 ? 3000 : 500);
+  }, 500);
 }
 
 process.on('SIGTERM', function () { gracefulShutdown('SIGTERM'); });
@@ -579,6 +631,7 @@ if (require.main === module) {
       console.log('\x1b[33m%s\x1b[0m', '\u26A0 MOCK MODE \u2014 serving fake alert data from mocks/');
     }
     console.log('Endpoints: /api/alerts, /api/history, /api/events, /proxy, /webhook, /health');
+    loadPendingEnds();
     startServerPolling();
   });
 }
