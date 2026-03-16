@@ -218,7 +218,8 @@ app.get('/api/events', function (req, res) {
 
 // Dedup guard — prevent duplicate Slack messages when Azure runs multiple
 // instances during deploys/restarts. Uses a shared file lock.
-var DEDUP_FILE = path.join(__dirname, '.slack-dedup.json');
+// DEDUP_FILE is set after DATA_DIR is defined (see below)
+var DEDUP_FILE;
 var DEDUP_WINDOW_MS = 60 * 1000; // 60 seconds
 
 function isDuplicateSlack(event) {
@@ -312,7 +313,16 @@ var serverRegionStates = {};
 var isFirstServerPoll = true;
 var isPolling = false; // guard against concurrent polls
 var serverEvents = []; // in-memory event log for client dashboard
-var EVENTS_FILE = path.join(__dirname, '.server-events.json');
+
+// Persistent data directory — use /home on Azure (survives deploys),
+// fall back to __dirname for local dev
+var DATA_DIR = fs.existsSync('/home') && !MOCK ? '/home/data' : __dirname;
+try { if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true }); } catch (e) {}
+
+var EVENTS_FILE = path.join(DATA_DIR, '.server-events.json');
+var REGION_STATES_FILE = path.join(DATA_DIR, '.server-region-states.json');
+DEDUP_FILE = path.join(DATA_DIR, '.slack-dedup.json');
+PENDING_ENDS_FILE = path.join(DATA_DIR, '.pending-alert-ends.json');
 
 var getIsraelTimeStr = serverUtils.getIsraelTimeStr;
 var isRegionMatchedServer = serverUtils.isRegionMatchedServer;
@@ -338,6 +348,29 @@ function saveServerEvents() {
     fs.writeFileSync(EVENTS_FILE, JSON.stringify(serverEvents), 'utf8');
   } catch (e) {
     console.error('[EVENTS] Failed to save to disk:', e.message);
+  }
+}
+
+// Load persisted region states from disk on startup
+function loadRegionStates() {
+  try {
+    if (fs.existsSync(REGION_STATES_FILE)) {
+      var data = JSON.parse(fs.readFileSync(REGION_STATES_FILE, 'utf8'));
+      Object.keys(data).forEach(function (k) { serverRegionStates[k] = data[k]; });
+      var activeCount = Object.values(serverRegionStates).filter(Boolean).length;
+      console.log('[STATES] Loaded region states from disk (' + activeCount + ' active)');
+    }
+  } catch (e) {
+    console.error('[STATES] Failed to load from disk:', e.message);
+  }
+}
+
+// Persist region states to disk
+function saveRegionStates() {
+  try {
+    fs.writeFileSync(REGION_STATES_FILE, JSON.stringify(serverRegionStates), 'utf8');
+  } catch (e) {
+    console.error('[STATES] Failed to save to disk:', e.message);
   }
 }
 
@@ -573,6 +606,7 @@ function serverPoll() {
 
       if (matched && !prev) {
         serverRegionStates[region.name] = true;
+        saveRegionStates();
         if (!isFirstServerPoll) {
           // Only fire webhooks after first poll — first poll seeds state only
           // to avoid false alert_start notifications from stale history entries
@@ -592,6 +626,7 @@ function serverPoll() {
         }
       } else if (!matched && prev) {
         serverRegionStates[region.name] = false;
+        saveRegionStates();
         if (!isFirstServerPoll) {
           var endEvent = {
             type: 'alert_end',
@@ -633,7 +668,8 @@ function startServerPolling() {
 // On SIGTERM (Azure restart/deploy), persist pending alert_end times to disk
 // so they survive restarts and the 15-minute delay is honoured.
 
-var PENDING_ENDS_FILE = path.join(__dirname, '.pending-alert-ends.json');
+// PENDING_ENDS_FILE is set after DATA_DIR is defined (see below)
+var PENDING_ENDS_FILE;
 
 function savePendingEnds() {
   try {
@@ -695,6 +731,7 @@ if (require.main === module) {
     }
     console.log('Endpoints: /api/alerts, /api/history, /api/events, /proxy, /webhook, /health');
     loadServerEvents();
+    loadRegionStates();
     loadPendingEnds();
     startServerPolling();
   });
