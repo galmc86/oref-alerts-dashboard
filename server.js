@@ -312,12 +312,38 @@ var serverRegionStates = {};
 var isFirstServerPoll = true;
 var isPolling = false; // guard against concurrent polls
 var serverEvents = []; // in-memory event log for client dashboard
+var EVENTS_FILE = path.join(__dirname, '.server-events.json');
 
 var getIsraelTimeStr = serverUtils.getIsraelTimeStr;
 var isRegionMatchedServer = serverUtils.isRegionMatchedServer;
 
+// Load persisted events from disk on startup
+function loadServerEvents() {
+  try {
+    if (fs.existsSync(EVENTS_FILE)) {
+      var data = JSON.parse(fs.readFileSync(EVENTS_FILE, 'utf8'));
+      if (Array.isArray(data)) {
+        serverEvents.push.apply(serverEvents, data);
+        console.log('[EVENTS] Loaded', serverEvents.length, 'events from disk');
+      }
+    }
+  } catch (e) {
+    console.error('[EVENTS] Failed to load from disk:', e.message);
+  }
+}
+
+// Persist events to disk (called after each change)
+function saveServerEvents() {
+  try {
+    fs.writeFileSync(EVENTS_FILE, JSON.stringify(serverEvents), 'utf8');
+  } catch (e) {
+    console.error('[EVENTS] Failed to save to disk:', e.message);
+  }
+}
+
 function recordEvent(event) {
   serverUtils.recordEvent(event, serverEvents, CONFIG.EVENT_LOG_MAX);
+  saveServerEvents();
 }
 
 function fetchJson(targetUrl) {
@@ -668,6 +694,7 @@ if (require.main === module) {
       console.log('\x1b[33m%s\x1b[0m', '\u26A0 MOCK MODE \u2014 serving fake alert data from mocks/');
     }
     console.log('Endpoints: /api/alerts, /api/history, /api/events, /proxy, /webhook, /health');
+    loadServerEvents();
     loadPendingEnds();
     startServerPolling();
   });
