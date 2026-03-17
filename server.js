@@ -248,6 +248,10 @@ function isDuplicateSlack(event) {
 }
 
 async function sendSlack(event) {
+  if (!SLACK_WEBHOOK_URL) {
+    console.error('[SLACK] No SLACK_WEBHOOK_URL configured — skipping');
+    return false;
+  }
   try {
     // Skip if another instance already sent this message recently
     if (isDuplicateSlack(event)) {
@@ -263,15 +267,19 @@ async function sendSlack(event) {
       '\nTime: ' + (event.israelTime || '') + ' (Israel)' +
       '\nSource: ' + source;
     var payload = 'payload=' + encodeURIComponent(JSON.stringify({ text: text }));
+    console.log('[SLACK] Sending to webhook for:', event.type, event.displayNameEn);
     var response = await fetch(SLACK_WEBHOOK_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: payload,
     });
     var result = await response.text();
+    if (result !== 'ok') {
+      console.error('[SLACK] Unexpected response (HTTP ' + response.status + '):', result);
+    }
     return result === 'ok';
   } catch (err) {
-    console.error('Slack error:', err.message);
+    console.error('[SLACK] Send error:', err.message);
     return false;
   }
 }
@@ -376,8 +384,14 @@ function saveRegionStates() {
 // Flicker guard — require 3 consecutive "not matched" polls before
 // transitioning a region from active→ended. Prevents OREF data
 // flicker from causing false alert_end → alert_start cycles.
-var FLICKER_THRESHOLD = 3;
+var FLICKER_THRESHOLD = 6; // 6 polls × 5s = 30 seconds before confirming alert_end
 var regionNotMatchedCount = {}; // { regionName: consecutiveNotMatchedPolls }
+
+// Re-alert cooldown: once alert_start is sent for a region, suppress
+// further alert_start messages for the same region within this window.
+// Prevents duplicate Slack messages when OREF data flickers.
+var ALERT_COOLDOWN_MS = parseInt(process.env.ALERT_COOLDOWN_MINUTES || '5', 10) * 60 * 1000;
+var lastAlertStartTime = {}; // { regionName: epoch ms }
 
 function recordEvent(event) {
   serverUtils.recordEvent(event, serverEvents, CONFIG.EVENT_LOG_MAX);
@@ -431,11 +445,21 @@ function fireWebhook(event) {
         delete pendingAlertEnds[region];
         savePendingAlertEnds();
       }
-      sendSlack(event).then(function (ok) {
-        if (ok) console.log('[SLACK] Sent:', event.type, event.displayNameEn);
-        else console.error('[SLACK] Failed for:', event.displayNameEn);
-      });
+      // Cooldown: skip if we already sent alert_start for this region recently
+      var lastStart = lastAlertStartTime[region] || 0;
+      if (Date.now() - lastStart < ALERT_COOLDOWN_MS) {
+        console.log('[SLACK] Cooldown skip alert_start for:', event.displayNameEn,
+          '(last sent', Math.round((Date.now() - lastStart) / 1000) + 's ago, cooldown=' + (ALERT_COOLDOWN_MS / 60000) + 'min)');
+      } else {
+        lastAlertStartTime[region] = Date.now();
+        sendSlack(event).then(function (ok) {
+          if (ok) console.log('[SLACK] Sent:', event.type, event.displayNameEn);
+          else console.error('[SLACK] Failed for:', event.displayNameEn);
+        });
+      }
     } else if (event.type === 'alert_end') {
+      // Clear cooldown so a genuine new alert after this end gets sent
+      delete lastAlertStartTime[region];
       var sendAfter = Date.now() + ALERT_END_SLACK_DELAY_MS;
       pendingAlertEnds[region] = { event: event, sendAfter: sendAfter };
       savePendingAlertEnds();
@@ -706,7 +730,16 @@ function startServerPolling() {
     return;
   }
   console.log('Webhook polling active — every', SERVER_POLL_MS / 1000, 'seconds');
-  if (SLACK_WEBHOOK_URL) console.log('  Slack: configured');
+  if (SLACK_WEBHOOK_URL) {
+    // Log masked webhook URL for diagnostics (show host only)
+    try {
+      var webhookHost = new URL(SLACK_WEBHOOK_URL).host;
+      console.log('  Slack: configured (host: ' + webhookHost + ')');
+    } catch (e) {
+      console.error('  Slack: INVALID URL — check SLACK_WEBHOOK_URL env var');
+    }
+  }
+  console.log('  Alert cooldown: ' + (ALERT_COOLDOWN_MS / 60000) + ' min');
   if (GOOGLE_SHEET_WEBHOOK_URL) console.log('  Google Sheets: configured');
   if (OREF_PROXY_URL) console.log('  OREF proxy: ' + OREF_PROXY_URL);
   serverPoll();
