@@ -248,6 +248,10 @@ function isDuplicateSlack(event) {
 }
 
 async function sendSlack(event) {
+  if (!SLACK_WEBHOOK_URL) {
+    console.error('[SLACK] No SLACK_WEBHOOK_URL configured — skipping');
+    return false;
+  }
   try {
     // Skip if another instance already sent this message recently
     if (isDuplicateSlack(event)) {
@@ -263,15 +267,19 @@ async function sendSlack(event) {
       '\nTime: ' + (event.israelTime || '') + ' (Israel)' +
       '\nSource: ' + source;
     var payload = 'payload=' + encodeURIComponent(JSON.stringify({ text: text }));
+    console.log('[SLACK] Sending to webhook for:', event.type, event.displayNameEn);
     var response = await fetch(SLACK_WEBHOOK_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: payload,
     });
     var result = await response.text();
+    if (result !== 'ok') {
+      console.error('[SLACK] Unexpected response (HTTP ' + response.status + '):', result);
+    }
     return result === 'ok';
   } catch (err) {
-    console.error('Slack error:', err.message);
+    console.error('[SLACK] Send error:', err.message);
     return false;
   }
 }
@@ -706,7 +714,15 @@ function startServerPolling() {
     return;
   }
   console.log('Webhook polling active — every', SERVER_POLL_MS / 1000, 'seconds');
-  if (SLACK_WEBHOOK_URL) console.log('  Slack: configured');
+  if (SLACK_WEBHOOK_URL) {
+    // Log masked webhook URL for diagnostics (show host only)
+    try {
+      var webhookHost = new URL(SLACK_WEBHOOK_URL).host;
+      console.log('  Slack: configured (host: ' + webhookHost + ')');
+    } catch (e) {
+      console.error('  Slack: INVALID URL — check SLACK_WEBHOOK_URL env var');
+    }
+  }
   if (GOOGLE_SHEET_WEBHOOK_URL) console.log('  Google Sheets: configured');
   if (OREF_PROXY_URL) console.log('  OREF proxy: ' + OREF_PROXY_URL);
   serverPoll();
