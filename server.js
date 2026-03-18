@@ -14,6 +14,7 @@ const ROOT = __dirname;
 const MOCK = process.argv.includes('--mock');
 const SERVER_POLL_MS = 5000;
 const ALERT_END_SLACK_DELAY_MS = parseInt(process.env.ALERT_END_DELAY_MINUTES || '15', 10) * 60 * 1000;
+const BATCH_WINDOW_MS = parseInt(process.env.BATCH_WINDOW_MS || '60000', 10);
 
 // Pending alert_end Slack messages — written to disk on every mutation.
 // The poll loop checks these every 5 seconds and sends when sendAfter has elapsed.
@@ -247,27 +248,52 @@ function isDuplicateSlack(event) {
   return false;
 }
 
-async function sendSlack(event) {
+async function sendSlackBatch(events) {
+  if (!events || events.length === 0) return true;
   if (!SLACK_WEBHOOK_URL) {
     console.error('[SLACK] No SLACK_WEBHOOK_URL configured — skipping');
     return false;
   }
   try {
-    // Skip if another instance already sent this message recently
-    if (isDuplicateSlack(event)) {
-      console.log('[SLACK] Dedup skip:', event.type, event.displayNameEn);
-      return true; // pretend success so caller doesn't retry
-    }
+    // Atomic batch dedup: read file once, filter all events, write all keys back at once
+    var now = Date.now();
+    var dedup = {};
+    try {
+      if (DEDUP_FILE_PATH && fs.existsSync(DEDUP_FILE_PATH)) {
+        dedup = JSON.parse(fs.readFileSync(DEDUP_FILE_PATH, 'utf8'));
+      }
+    } catch (e) { dedup = {}; }
+    // Clean old entries
+    Object.keys(dedup).forEach(function (k) {
+      if (now - dedup[k] > DEDUP_WINDOW_MS) delete dedup[k];
+    });
+    var unique = events.filter(function (event) {
+      var key = event.type + '|' + event.regionName;
+      if (dedup[key] && now - dedup[key] < DEDUP_WINDOW_MS) {
+        console.log('[SLACK] Dedup skip:', event.type, event.displayNameEn);
+        return false;
+      }
+      dedup[key] = now; // mark as seen immediately within this batch
+      return true;
+    });
+    // Write all dedup keys at once (single file write reduces cross-instance race window)
+    try {
+      if (DEDUP_FILE_PATH) fs.writeFileSync(DEDUP_FILE_PATH, JSON.stringify(dedup), 'utf8');
+    } catch (e) { /* best effort */ }
+    if (unique.length === 0) return true;
 
-    var icon = event.type === 'alert_start' ? ':rotating_light:' : ':white_check_mark:';
-    var label = event.type === 'alert_start' ? 'Alert Started' : 'Alert Ended';
-    var source = event.source || 'Server';
-    var text = icon + ' *' + label + '* \u2014 ' + (event.displayNameEn || '') +
-      ' (' + (event.regionName || '') + ')' +
-      '\nTime: ' + (event.israelTime || '') + ' (Israel)' +
-      '\nSource: ' + source;
+    var first = unique[0];
+    var icon = first.type === 'alert_start' ? ':rotating_light:' : ':white_check_mark:';
+    var label = first.type === 'alert_start' ? 'Close Zone' : 'Bring Zone Online';
+    var regionLines = unique.map(function (e) {
+      return '\u2022 ' + (e.displayNameEn || '') + ' (' + (e.regionName || '') + ')';
+    }).join('\n');
+    var text = '<!subteam^S05MLNN1GR0>\n' +
+      icon + ' *' + label + '*\n' +
+      'Time: ' + (first.israelTime || '') + ' (Israel)\n' +
+      regionLines;
     var payload = 'payload=' + encodeURIComponent(JSON.stringify({ text: text }));
-    console.log('[SLACK] Sending to webhook for:', event.type, event.displayNameEn);
+    console.log('[SLACK] Sending batch to webhook for:', first.type, unique.map(function (e) { return e.displayNameEn; }).join(', '));
     var response = await fetch(SLACK_WEBHOOK_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -432,8 +458,13 @@ function fetchJson(targetUrl) {
   });
 }
 
+// Batch collector for alert_start events during a single poll cycle
+var pendingAlertStarts = [];
+var alertStartBatchTimer = null; // epoch ms when first pending alert_start arrived
+
 // Fire webhook: sends directly to Slack + Google Sheets (no intermediate hop)
-// alert_end Slack notifications are delayed 15 minutes; cancelled if alert restarts
+// alert_start Slack notifications are coalesced within BATCH_WINDOW_MS
+// alert_end Slack notifications are delayed 15 minutes; coalesced within BATCH_WINDOW_MS
 function fireWebhook(event) {
   var region = event.regionName;
 
@@ -452,10 +483,8 @@ function fireWebhook(event) {
           '(last sent', Math.round((Date.now() - lastStart) / 1000) + 's ago, cooldown=' + (ALERT_COOLDOWN_MS / 60000) + 'min)');
       } else {
         lastAlertStartTime[region] = Date.now();
-        sendSlack(event).then(function (ok) {
-          if (ok) console.log('[SLACK] Sent:', event.type, event.displayNameEn);
-          else console.error('[SLACK] Failed for:', event.displayNameEn);
-        });
+        if (pendingAlertStarts.length === 0) alertStartBatchTimer = Date.now();
+        pendingAlertStarts.push(event);
       }
     } else if (event.type === 'alert_end') {
       // Clear cooldown so a genuine new alert after this end gets sent
@@ -474,6 +503,20 @@ function fireWebhook(event) {
       else console.error('[SHEETS] Failed for:', event.displayNameEn);
     });
   }
+}
+
+// Flush batched alert_start events as a single Slack message (after BATCH_WINDOW_MS)
+function flushAlertStarts() {
+  if (pendingAlertStarts.length === 0) return;
+  if (Date.now() - alertStartBatchTimer < BATCH_WINDOW_MS) return; // still coalescing
+  var batch = pendingAlertStarts.slice();
+  pendingAlertStarts = [];
+  alertStartBatchTimer = null;
+  sendSlackBatch(batch).then(function (ok) {
+    var names = batch.map(function (e) { return e.displayNameEn; }).join(', ');
+    if (ok) console.log('[SLACK] Sent batch alert_start:', names);
+    else console.error('[SLACK] Failed batch alert_start:', names);
+  });
 }
 
 // --- Poll-based pending alert_end system ---
@@ -504,6 +547,25 @@ function processPendingAlertEnds() {
   if (regions.length === 0) return;
 
   var now = Date.now();
+
+  // Find the earliest sendAfter among all pending regions
+  var earliestSendAfter = Infinity;
+  var anyReady = false;
+  regions.forEach(function (region) {
+    var pending = pendingAlertEnds[region];
+    if (!pending || !pending.sendAfter) return;
+    if (pending.sendAfter < earliestSendAfter) earliestSendAfter = pending.sendAfter;
+    if (now >= pending.sendAfter) anyReady = true;
+  });
+
+  // If nothing is ready yet, skip
+  if (!anyReady) return;
+
+  // Wait until BATCH_WINDOW_MS after the earliest became ready
+  if (now - earliestSendAfter < BATCH_WINDOW_MS) return;
+
+  // Collect ALL ready events (their sendAfter has passed)
+  var readyEvents = [];
   var changed = false;
   regions.forEach(function (region) {
     var pending = pendingAlertEnds[region];
@@ -513,21 +575,25 @@ function processPendingAlertEnds() {
       return;
     }
     if (now >= pending.sendAfter) {
+      readyEvents.push(Object.assign({}, pending.event));
       delete pendingAlertEnds[region];
       changed = true;
-      // Update time to reflect when the message is actually sent, not when alert ended
-      var sendEvent = Object.assign({}, pending.event, {
-        israelTime: getIsraelTimeStr(),
-        timestamp: new Date().toISOString()
-      });
-      sendSlack(sendEvent).then(function (ok) {
-        if (ok) console.log('[SLACK] Sent (delayed):', sendEvent.type, sendEvent.displayNameEn);
-        else console.error('[SLACK] Failed (delayed) for:', sendEvent.displayNameEn);
-      });
     }
   });
   if (changed) {
     savePendingAlertEnds();
+  }
+
+  if (readyEvents.length > 0) {
+    // Update time to reflect when the message is actually sent
+    var sendTime = getIsraelTimeStr();
+    var sendTs = new Date().toISOString();
+    readyEvents.forEach(function (e) { e.israelTime = sendTime; e.timestamp = sendTs; });
+    sendSlackBatch(readyEvents).then(function (ok) {
+      var names = readyEvents.map(function (e) { return e.displayNameEn; }).join(', ');
+      if (ok) console.log('[SLACK] Sent batch alert_end:', names);
+      else console.error('[SLACK] Failed batch alert_end:', names);
+    });
   }
 }
 
@@ -716,6 +782,7 @@ function serverPoll() {
     });
   }).then(function () {
     isFirstServerPoll = false;
+    flushAlertStarts();
     processPendingAlertEnds();
   }).catch(function (err) {
     console.error('Server poll error:', err.message);
