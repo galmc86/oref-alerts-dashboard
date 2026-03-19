@@ -10,7 +10,6 @@ var MapView = (function () {
     haifa:            { x: 84,  y: 90,  r: 14 },
     krayot:           { x: 92,  y: 82,  r: 12 },
     hadera:           { x: 80,  y: 120, r: 12 },
-    yokneam:          { x: 88,  y: 105, r: 11 },
     nathanya:         { x: 72,  y: 150, r: 13 },
     hodhasharon:      { x: 76,  y: 170, r: 11 },
     herzliyaramathas: { x: 68,  y: 183, r: 12 },
@@ -23,7 +22,6 @@ var MapView = (function () {
     ramlelod:         { x: 76,  y: 225, r: 11 },
     jerusalem:        { x: 94,  y: 240, r: 15 },
     ashdod:           { x: 62,  y: 260, r: 13 },
-    ashkelon:         { x: 58,  y: 283, r: 13 },
     beersheva:        { x: 60,  y: 365, r: 15 },
     eilat:            { x: 48,  y: 465, r: 13 },
   };

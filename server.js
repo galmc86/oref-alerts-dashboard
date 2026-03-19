@@ -222,6 +222,13 @@ app.get('/api/events', function (req, res) {
 var DEDUP_FILE_PATH;
 var DEDUP_WINDOW_MS = 60 * 1000; // 60 seconds — cross-instance dedup only
 
+// Slack quiet hours: suppress notifications between 23:45–08:30 Israel time
+function isQuietHours() {
+  var now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' }));
+  var mins = now.getHours() * 60 + now.getMinutes();
+  return mins >= 1425 || mins < 510; // 23:45 (1425) to 08:30 (510)
+}
+
 function isDuplicateSlack(event) {
   var key = event.type + '|' + event.regionName;
   var now = Date.now();
@@ -468,7 +475,7 @@ var alertStartBatchTimer = null; // epoch ms when first pending alert_start arri
 function fireWebhook(event) {
   var region = event.regionName;
 
-  if (SLACK_WEBHOOK_URL) {
+  if (SLACK_WEBHOOK_URL && !isQuietHours()) {
     if (event.type === 'alert_start') {
       // Cancel any pending "ended" notification for this region
       if (pendingAlertEnds[region]) {
@@ -508,6 +515,7 @@ function fireWebhook(event) {
 // Flush batched alert_start events as a single Slack message (after BATCH_WINDOW_MS)
 function flushAlertStarts() {
   if (pendingAlertStarts.length === 0) return;
+  if (isQuietHours()) { pendingAlertStarts = []; alertStartBatchTimer = null; return; }
   if (Date.now() - alertStartBatchTimer < BATCH_WINDOW_MS) return; // still coalescing
   var batch = pendingAlertStarts.slice();
   pendingAlertStarts = [];
@@ -545,6 +553,7 @@ function processPendingAlertEnds() {
   loadPendingAlertEnds();
   var regions = Object.keys(pendingAlertEnds);
   if (regions.length === 0) return;
+  if (isQuietHours()) return; // hold pending ends until quiet hours are over
 
   var now = Date.now();
 

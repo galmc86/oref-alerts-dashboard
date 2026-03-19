@@ -23,9 +23,7 @@ const CONFIG = {
     { id: 15, name: 'hadera',            cityId: 90, displayName: 'חדרה',                displayNameEn: 'Hadera',           orefArea: 'חדרה | אזור מנשה',                     orefAreaEn: 'Hadera | Menashe Area',                  matchPatterns: ['חדרה'] },
     { id: 20, name: 'eilat',             cityId: 52, displayName: 'אילת',                displayNameEn: 'Eilat',            orefArea: 'אילת | אזור אילת',                    orefAreaEn: 'Eilat | Eilat Area',                     matchPatterns: ['אילת'] },
     { id: 21, name: 'modiin',            cityId: 30, displayName: 'מודיעין מכבים רעות',  displayNameEn: "Modi'in",          orefArea: 'מודיעין מכבים רעות | אזור ירושלים',    orefAreaEn: "Modi'in | Jerusalem Area",               matchPatterns: ['מודיעין'] },
-    { id: 22, name: 'ashkelon',          cityId: 85, displayName: 'אשקלון',              displayNameEn: 'Ashkelon',         orefArea: 'אשקלון | אזור מערב לכיש',             orefAreaEn: 'Ashkelon | West Lachish Area',           matchPatterns: ['אשקלון'] },
     { id: 26, name: 'shoham',            cityId: 79, displayName: 'שוהם',                displayNameEn: 'Shoham',           orefArea: 'שוהם | אזור ירקון',                    orefAreaEn: 'Shoham | Yarkon Area',                   matchPatterns: ['שוהם'] },
-    { id: 27, name: 'yokneam',           cityId: 63, displayName: 'יוקנעם המושבה',       displayNameEn: 'Yokneam',          orefArea: 'יוקנעם המושבה | אזור וואדי ערה',      orefAreaEn: 'Yokneam | Wadi Ara Area',                matchPatterns: ['יוקנעם', 'יקנעם'] },
   ]
 };
 
